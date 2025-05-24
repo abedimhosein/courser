@@ -1,169 +1,163 @@
+# app_logic.py
+
 import os
-import subprocess
-import json
+import traceback
 from tkinter import filedialog
 from moviepy import VideoFileClip
+
 from database import (
-    get_db_session,
-    Course,
-    Chapter,
-    Video,
-    WatchedStatusEnum,
+    get_db_session, Course, Chapter, Video, WatchedStatusEnum
 )
+
+# Supported video file extensions (case-insensitive)
+VIDEO_EXTENSIONS = ('.mp4', '.mkv', '.avi', '.mov', '.flv', '.wmv')
 
 
 class VideoSchedulerAppLogic:
     def __init__(self):
         self.db_session = get_db_session()
         self.current_course = None
-        self.gui_callbacks = {}  # برای فراخوانی توابع به‌روزرسانی GUI
+        self.gui_callbacks = {}  # To call GUI update functions
 
     def register_gui_callbacks(self, **callbacks):
-        """توابع callback برای به‌روزرسانی GUI را ثبت می‌کند."""
+        """Registers callback functions for updating the GUI."""
         self.gui_callbacks = callbacks
 
     def _call_gui_callback(self, callback_name, *args):
-        """یک callback خاص GUI را در صورت وجود فراخوانی می‌کند."""
+        """Calls a specific GUI callback if it exists."""
         if callback_name in self.gui_callbacks and callable(self.gui_callbacks[callback_name]):
             self.gui_callbacks[callback_name](*args)
 
-    @staticmethod
-    def get_video_duration(video_path):
+    def get_video_duration(self, video_path):
         """
-        مدت زمان ویدیو را با استفاده از ffprobe (و یا MoviePy به عنوان fallback) استخراج می‌کند.
-        مدت زمان را به ثانیه برمی‌گرداند یا None در صورت خطا.
+        Extracts video duration using MoviePy.
+        Returns duration in seconds (float) or None on error.
         """
-        # تلاش با ffprobe
         try:
-            cmd = [
-                'ffprobe', '-v', 'quiet', '-print_format', 'json',
-                '-show_format', '-show_streams', video_path
-            ]
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
-            if result.returncode == 0 and result.stdout:
-                metadata = json.loads(result.stdout)
-                if 'format' in metadata and 'duration' in metadata['format']:
-                    dur_str = metadata['format']['duration']
-                    if dur_str: return float(dur_str)
-                if 'streams' in metadata and metadata['streams']:
-                    for stream in metadata['streams']:  # جستجو در استریم‌های ویدیو
-                        if stream.get('codec_type') == 'video' and 'duration' in stream:
-                            dur_str = stream['duration']
-                            if dur_str: return float(dur_str)
-                # اگر در فرمت یا استریم ویدیو نبود، اولین استریم با duration را امتحان کن
-                if 'streams' in metadata and metadata['streams'] and 'duration' in metadata['streams'][0]:
-                    dur_str = metadata['streams'][0]['duration']
-                    if dur_str: return float(dur_str)
+            print(f"Attempting to get duration for: {video_path}")
+            # Using a context manager for VideoFileClip is good practice
+            with VideoFileClip(video_path) as clip:
+                duration = clip.duration
 
-            print(f"هشدار ffprobe: مدت زمان نامعتبر یا عدم یافتن برای {video_path}. خطای احتمالی: {result.stderr}")
-            return None
-        except FileNotFoundError:
-            try:
-                with VideoFileClip(video_path) as clip:
-                    duration = clip.duration
-                return duration if duration and duration > 0 else None
-            except Exception as e_moviepy:
-                print(f"خطا در MoviePy برای {video_path}: {e_moviepy}")
+            if duration is not None and duration > 0:
+                print(f"Duration found for {video_path}: {duration} seconds")
+                return float(duration)
+            else:
+                print(f"MoviePy Warning: Invalid duration (zero, None, or negative) for video {video_path}. Duration: {duration}")
                 return None
-        except Exception as e_ff:
-            print(f"خطا در اجرای ffprobe برای {video_path}: {e_ff}")
+        except Exception as e:
+            print(f"MoviePy Error: Could not read duration for video {video_path}. Error: {e}")
+            # traceback.print_exc() # Uncomment for full stack trace during debugging
             return None
 
-    @staticmethod
-    def find_subtitle(video_path):
+    def find_subtitle(self, video_path):
+        """Finds a subtitle file with the same base name as the video."""
         base, _ = os.path.splitext(video_path)
-        for sub_ext in ['.srt', '.vtt', '.ass']:
+        for sub_ext in ['.srt', '.vtt', '.ass']:  # Common subtitle extensions
             subtitle_file = base + sub_ext
             if os.path.exists(subtitle_file):
                 return subtitle_file
         return None
 
-    def select_and_load_course(self):  # بدون تغییر نسبت به نسخه کامل قبلی
-        directory_path = filedialog.askdirectory(title="انتخاب پوشه اصلی دوره")
+    def select_and_load_course(self):
+        """Handles course selection via dialog and loads or creates it."""
+        directory_path = filedialog.askdirectory(title="Select Main Course Folder")
         if not directory_path:
-            return
+            return  # User cancelled
 
+        # Check if this directory path is already a registered course
         course = self.db_session.query(Course).filter(Course.base_directory_path == directory_path).first()
 
         if course:
             self.current_course = course
-            self._call_gui_callback("show_message", f"دوره '{course.name}' از پایگاه داده بارگذاری شد.", "info")
+            self._call_gui_callback("show_message", f"Course '{course.name}' loaded from database.", "info")
         else:
+            # New course: get name (for now, from folder name, ideally from user input)
             course_name_suggestion = os.path.basename(directory_path)
-            course_name = course_name_suggestion  # در یک برنامه واقعی از کاربر پرسیده شود
+            # In a real app, use simpledialog.askstring or a CTkInputDialog for the name
+            course_name = course_name_suggestion
 
+            # Check if a course with this name (but different path) already exists
             existing_course_with_name = self.db_session.query(Course).filter(Course.name == course_name).first()
             if existing_course_with_name:
-                self._call_gui_callback("show_message", f"دوره‌ای با نام '{course_name}' قبلاً با مسیر دیگری ثبت شده.", "error")
+                self._call_gui_callback("show_message",
+                                        f"A course named '{course_name}' already exists with a different path. "
+                                        f"Please choose a different name or load the existing course by its folder.", "error")
                 return
 
             new_course = Course(name=course_name, base_directory_path=directory_path)
             self.db_session.add(new_course)
             try:
-                self.db_session.flush()
-                # حالا _scan_and_save_course_content را فراخوانی می‌کنیم
+                self.db_session.flush()  # Get new_course.id before full commit
                 self._scan_and_save_course_content(new_course, directory_path, is_new_course=True)
-                self.db_session.commit()
+                self.db_session.commit()  # Commit all changes for the new course
                 self.current_course = new_course
-                self._call_gui_callback("show_message", f"دوره جدید '{new_course.name}' ایجاد شد.", "info")
+                self._call_gui_callback("show_message", f"New course '{new_course.name}' created and scanned.", "info")
             except Exception as e:
-                self.db_session.rollback()
-                print(f"خطا در ایجاد دوره جدید: {e}")  # برای دیباگ بهتر، traceback را هم لاگ کنید
-                import traceback
+                self.db_session.rollback()  # Rollback on error
+                print(f"Error creating new course '{course_name}': {e}")
                 traceback.print_exc()
-                self._call_gui_callback("show_message", f"خطا در ایجاد دوره: {e}", "error")
-                self.current_course = None
+                self._call_gui_callback("show_message", f"Error creating course: {e}", "error")
+                self.current_course = None  # Ensure no partially set course
                 return
 
         self._call_gui_callback("display_course_info", self.current_course)
-        self._call_gui_callback("update_course_list_display")
+        self._call_gui_callback("update_course_list_display")  # Refresh the list of all courses in GUI
 
     def _scan_and_save_course_content(self, course_obj, directory_path, is_new_course=False):
         """
-        محتوای دوره (فصل‌ها و ویدیوها) را اسکن و در پایگاه داده ذخیره/به‌روز می‌کند.
-        این نسخه اصلاح شده تا ساب‌دایرکتوری‌ها را به درستی به عنوان فصل شناسایی کند.
+        Scans the course directory for chapters and videos, then saves/updates them in the database.
+        - If subdirectories exist, they are chapters. Videos in root are ignored.
+        - If no subdirectories, the root directory is the single chapter.
         """
-        print(f"شروع اسکن محتوای دوره: {course_obj.name} در مسیر: {directory_path}")
+        print(f"Scanning content for course '{course_obj.name}' at path: {directory_path}")
         overall_course_duration = 0.0
 
-        # برای نگهداری مسیرهای فصل‌ها و ویدیوهایی که در این اسکن در دیسک یافت می‌شوند
+        # Sets to keep track of items found on disk during this scan
         current_disk_chapter_paths = set()
+        # current_disk_video_paths_for_course = set() # If needed for global video deletion logic later
 
-        # 1. تعیین فصل‌های بالقوه (ساب‌دایرکتوری‌ها یا خود پوشه اصلی)
+        # 1. Determine potential chapters (subdirectories or the root itself)
         potential_chapters_info = []
 
         if not os.path.isdir(directory_path):
-            raise FileNotFoundError(f"مسیر اصلی دوره '{directory_path}' یافت نشد یا یک فایل است.")
+            raise FileNotFoundError(f"Course base path '{directory_path}' not found or is not a directory.")
 
-        # ابتدا ساب‌دایرکتوری‌های واقعی را پیدا کن
+        # Find actual subdirectories to be treated as chapters
         actual_subdirectories = []
-        for item_name in os.listdir(directory_path):
-            item_full_path = os.path.join(directory_path, item_name)
-            if os.path.isdir(item_full_path):
-                actual_subdirectories.append(item_name)
+        try:
+            for item_name in os.listdir(directory_path):
+                item_full_path = os.path.join(directory_path, item_name)
+                if os.path.isdir(item_full_path):
+                    actual_subdirectories.append(item_name)
+        except PermissionError:
+            print(f"Permission denied to read directory: {directory_path}")
+            raise  # Re-raise to be caught by the caller
 
         if actual_subdirectories:
-            # اگر ساب‌دایرکتوری وجود دارد، آن‌ها فصل‌ها هستند
-            print(f"ساب‌دایرکتوری‌ها یافت شدند: {actual_subdirectories}")
-            for subdir_name in sorted(actual_subdirectories):
+            print(f"Found subdirectories (chapters): {actual_subdirectories}")
+            for subdir_name in sorted(actual_subdirectories):  # Sort for consistent ordering
                 potential_chapters_info.append({
                     'name': subdir_name,
                     'path': os.path.join(directory_path, subdir_name)
                 })
         else:
-            # اگر ساب‌دایرکتوری وجود ندارد، خود پوشه اصلی دوره، تنها فصل است
-            print("هیچ ساب‌دایرکتوری یافت نشد. پوشه اصلی به عنوان فصل در نظر گرفته می‌شود.")
+            # No subdirectories found, the root directory itself is the single chapter
+            print("No subdirectories found. Treating root directory as a single chapter.")
             potential_chapters_info.append({
-                'name': course_obj.name,  # نام فصل همان نام دوره خواهد بود
+                'name': course_obj.name,  # Chapter name will be the course name
                 'path': directory_path
             })
 
         if not potential_chapters_info:
-            print(f"هشدار: هیچ فصل یا ویدیویی در مسیر '{directory_path}' برای پردازش یافت نشد.")
-            course_obj.total_duration_seconds = 0.0  # اگر هیچ محتوایی نبود
-            return  # اگر هیچ فصلی برای پردازش وجود ندارد خارج شو
+            print(f"Warning: No chapters found to process in '{directory_path}'.")
+            course_obj.total_duration_seconds = 0.0
+            # If it's not a new course, we might need to delete existing chapters if they are now all gone.
+            # This is handled later by comparing current_disk_chapter_paths with DB.
+            # For now, just return if nothing to process.
+            # However, we should proceed to the deletion logic if it's a rescan.
 
-        # 2. پردازش هر فصل شناسایی شده
+        # 2. Process each identified chapter
         disk_chapter_order = 0
         for chap_info in potential_chapters_info:
             disk_chapter_order += 1
@@ -173,190 +167,199 @@ class VideoSchedulerAppLogic:
             current_disk_chapter_paths.add(chapter_path_on_disk)
 
             db_chapter = None
-            if not is_new_course:  # برای دوره‌های موجود، سعی کن فصل را پیدا کنی
+            if not is_new_course:  # For existing courses, try to find the chapter by its path
                 db_chapter = self.db_session.query(Chapter).filter_by(
                     course_id=course_obj.id,
                     path=chapter_path_on_disk
                 ).first()
 
-            if not db_chapter:  # فصل جدید است
-                print(f"  ایجاد فصل جدید: {chapter_name_on_disk} با مسیر: {chapter_path_on_disk}")
+            if not db_chapter:  # Chapter is new to the database for this course
+                print(f"  Creating new chapter entry: '{chapter_name_on_disk}' (Order: {disk_chapter_order})")
                 db_chapter = Chapter(
                     name=chapter_name_on_disk,
                     path=chapter_path_on_disk,
-                    order_in_course=disk_chapter_order,  # مقداردهی اولیه ترتیب
-                    course_id=course_obj.id
+                    order_in_course=disk_chapter_order,
+                    course_id=course_obj.id  # Associate with the current course object
                 )
                 self.db_session.add(db_chapter)
-                self.db_session.flush()  # برای گرفتن ID و امکان افزودن ویدیو
-            else:  # فصل موجود است، اطلاعاتش را به‌روز کن
-                print(f"  به‌روزرسانی فصل موجود: {chapter_name_on_disk}")
-                db_chapter.name = chapter_name_on_disk
-                db_chapter.order_in_course = disk_chapter_order
+                self.db_session.flush()  # Necessary to get db_chapter.id for new videos
+            else:  # Chapter already exists, update its info
+                print(f"  Updating existing chapter: '{chapter_name_on_disk}' (New Order: {disk_chapter_order})")
+                db_chapter.name = chapter_name_on_disk  # Update name in case folder was renamed
+                db_chapter.order_in_course = disk_chapter_order  # Update order
 
-            # 3. اسکن ویدیوها در داخل مسیر فصل فعلی (chapter_path_on_disk)
+            # 3. Scan for videos within the current chapter path
             chapter_total_duration = 0.0
             disk_video_order = 0
             current_disk_video_paths_in_chapter = set()
 
             try:
-                # لیست کردن تمام آیتم‌ها در پوشه فصل
-                # print(f"    اسکن ویدیوها در فصل '{chapter_name_on_disk}' مسیر: {chapter_path_on_disk}")
-                items_in_chapter_dir = sorted(os.listdir(chapter_path_on_disk))
+                print(f"    Scanning videos in chapter '{chapter_name_on_disk}' at path: {chapter_path_on_disk}")
+                items_in_chapter_dir = sorted(os.listdir(chapter_path_on_disk))  # Sort for consistent video order
             except FileNotFoundError:
-                print(f"    خطا: مسیر فصل '{chapter_path_on_disk}' یافت نشد. از این فصل صرف‌نظر می‌شود.")
-                # اگر فصل در دیتابیس بود و الان نیست، در بخش بعدی (حذف فصل‌های گمشده) مدیریت می‌شود
+                print(f"    Error: Chapter path '{chapter_path_on_disk}' not found during video scan. Skipping.")
+                # If chapter was in DB, it might be removed later if not in current_disk_chapter_paths
                 continue
             except PermissionError:
-                print(f"    خطا: اجازه دسترسی به مسیر فصل '{chapter_path_on_disk}' وجود ندارد.")
+                print(f"    Error: Permission denied to read chapter path '{chapter_path_on_disk}'. Skipping.")
                 continue
-
-            # print(f"    آیتم‌های یافت شده در '{chapter_name_on_disk}': {items_in_chapter_dir}")
 
             for file_name in items_in_chapter_dir:
                 video_file_path_on_disk = os.path.join(chapter_path_on_disk, file_name)
 
-                # بررسی اینکه آیا آیتم یک فایل است و پسوند ویدیویی دارد
-                if not (os.path.isfile(video_file_path_on_disk) and file_name.lower().endswith(('.mp4', '.mkv', '.avi', '.mov', '.flv', '.wmv'))):
-                    # print(f"      نادیده گرفتن (فایل ویدیو نیست): {video_file_path_on_disk}")
-                    continue
+                # Check if it's a file and has a supported video extension
+                if not (os.path.isfile(video_file_path_on_disk) and file_name.lower().endswith(VIDEO_EXTENSIONS)):
+                    continue  # Skip if not a video file
 
-                    # print(f"    پردازش فایل ویدیو: {video_file_path_on_disk}")
+                print(f"      Found potential video: {file_name}")
                 current_disk_video_paths_in_chapter.add(video_file_path_on_disk)
                 disk_video_order += 1
 
                 db_video = None
                 if not is_new_course:
+                    # A video is uniquely identified by its full file path.
+                    # If a video file moved chapters, its old DB entry should be deleted,
+                    # and a new one created for the new chapter.
                     db_video = self.db_session.query(Video).filter_by(
-                        # chapter_id=db_chapter.id, # این شرط لازم است اگر فایل با مسیر یکسان در چند فصل باشد
-                        file_path=video_file_path_on_disk  # مسیر فایل ویدیو باید یکتا باشد در کل دیتابیس
+                        file_path=video_file_path_on_disk
                     ).first()
-                    # اگر db_video پیدا شد ولی chapter_id آن با db_chapter.id فعلی متفاوت بود، یعنی مشکلی در داده‌ها هست
-                    # یا ویدیو به فصل دیگری منتقل شده. در این سناریو ساده فرض می‌کنیم file_path یکتاست.
+
+                    # If video found but belongs to a different chapter in DB, treat as new for this chapter
                     if db_video and db_video.chapter_id != db_chapter.id:
-                        print(f"      هشدار: ویدیوی {file_name} با مسیر یکسان در فصل دیگری ({db_video.chapter_id}) یافت شد. این ویدیو برای فصل فعلی ({db_chapter.name}) دوباره ایجاد می‌شود.")
-                        db_video = None  # مجبور به ایجاد مجدد برای این فصل
+                        print(f"      Warning: Video '{file_name}' with path '{video_file_path_on_disk}' "
+                              f"found in DB under a different chapter (ID: {db_video.chapter_id}). "
+                              f"It will be associated with current chapter '{db_chapter.name}' (ID: {db_chapter.id}).")
+                        # We might want to delete the old association or handle it.
+                        # For now, if it's in a different chapter in DB, it will be updated to this chapter.
+                        # If unique constraint on file_path is per DB, this is fine.
+                        # If file_path is unique AND chapter_id is part of key, then new one is made.
+                        # Current model has file_path as unique, so it will be updated.
+                        pass
 
                 video_duration = self.get_video_duration(video_file_path_on_disk)
+
                 if video_duration is None or video_duration <= 0:
-                    print(f"      هشدار: مدت زمان برای ویدیو '{video_file_path_on_disk}' قابل خواندن نیست یا صفر است.")
-                    if db_video:  # اگر قبلا بوده و الان فایلش مشکل دارد، حذفش می‌کنیم
-                        print(f"        ویدیوی نامعتبر '{db_video.name}' از فصل '{db_chapter.name}' حذف می‌شود.")
-                        self.db_session.delete(db_video)
-                    disk_video_order -= 1
-                    current_disk_video_paths_in_chapter.remove(video_file_path_on_disk)
+                    print(f"      Warning: Could not get valid duration for '{file_name}'. Skipping this video.")
+                    # If this video was in DB, it should be removed as its file is now problematic
+                    if db_video:
+                        print(f"        Video '{db_video.name}' (problematic file) will be removed from database.")
+                        self.db_session.delete(db_video)  # Delete problematic existing video
+                    disk_video_order -= 1  # Adjust order as this video is skipped
+                    current_disk_video_paths_in_chapter.remove(video_file_path_on_disk)  # Don't count it as "found on disk"
                     continue
 
-                if not db_video:
-                    print(f"      افزودن ویدیوی جدید: {file_name} به فصل {db_chapter.name}")
+                if not db_video:  # Video is new to the database or being re-associated
+                    print(f"      Adding new video entry: '{file_name}' to chapter '{db_chapter.name}'")
                     db_video = Video(
                         name=file_name,
                         file_path=video_file_path_on_disk,
                         duration_seconds=video_duration,
-                        chapter_id=db_chapter.id  # اتصال به فصل فعلی
+                        chapter_id=db_chapter.id  # Associate with the current chapter
+                        # order_in_chapter will be set below
                     )
                     self.db_session.add(db_video)
-                else:
-                    # print(f"      به‌روزرسانی ویدیوی موجود: {file_name}")
-                    db_video.name = file_name
-                    db_video.duration_seconds = video_duration
-                    # اگر ویدیو به این فصل تعلق نداشت و مجبور به ایجاد مجدد شدیم، chapter_id قبلا ست شده
-                    # اگر ویدیو از قبل به همین فصل تعلق داشت، chapter_id آن صحیح است
-                    if db_video.chapter_id != db_chapter.id:  # این حالت نباید رخ دهد اگر منطق بالا درست باشد
-                        db_video.chapter_id = db_chapter.id
+                else:  # Video already exists, update its info
+                    print(f"      Updating existing video: '{file_name}'")
+                    db_video.name = file_name  # Update name in case of case change or rename
+                    db_video.duration_seconds = video_duration  # Update duration
+                    if db_video.chapter_id != db_chapter.id:  # If it was found by path but belonged to another chapter
+                        db_video.chapter_id = db_chapter.id  # Re-associate with this chapter
 
                 db_video.order_in_chapter = disk_video_order
                 db_video.subtitle_path = self.find_subtitle(video_file_path_on_disk)
                 chapter_total_duration += video_duration
 
-            # حذف ویدیوهایی از این فصل که در دیتابیس هستند ولی دیگر روی دیسک نیستند
-            if not is_new_course:
-                # اطمینان از اینکه db_chapter.id مقدار دارد (پس از flush یا اگر از قبل بوده)
-                if db_chapter.id:
-                    db_video_paths_for_this_chapter = {
-                        vfp[0] for vfp in self.db_session.query(Video.file_path).filter_by(chapter_id=db_chapter.id).all()
-                    }
-                    videos_to_delete_paths = db_video_paths_for_this_chapter - current_disk_video_paths_in_chapter
-                    if videos_to_delete_paths:
-                        print(f"    حذف {len(videos_to_delete_paths)} ویدیوی گمشده از فصل '{db_chapter.name}'...")
-                        for path_to_del in videos_to_delete_paths:
-                            video_to_del_obj = self.db_session.query(Video).filter_by(chapter_id=db_chapter.id, file_path=path_to_del).first()
-                            if video_to_del_obj: self.db_session.delete(video_to_del_obj)
-                else:
-                    print(f"    هشدار: فصل '{db_chapter.name}' شناسه معتبری برای حذف ویدیوهای گمشده ندارد.")
+            # After processing all files in the chapter directory on disk,
+            # remove videos from DB that are in this chapter but no longer on disk.
+            if not is_new_course and db_chapter.id is not None:  # db_chapter.id might be None if flush failed
+                db_video_paths_for_this_chapter_in_db = {
+                    # Querying for a tuple (vfp[0]) as Video.file_path is a single column
+                    vfp[0] for vfp in self.db_session.query(Video.file_path).filter_by(chapter_id=db_chapter.id).all()
+                }
+                videos_to_delete_paths = db_video_paths_for_this_chapter_in_db - current_disk_video_paths_in_chapter
+                if videos_to_delete_paths:
+                    print(f"    Deleting {len(videos_to_delete_paths)} missing videos from chapter '{db_chapter.name}'...")
+                    for path_to_del in videos_to_delete_paths:
+                        video_to_del_obj = self.db_session.query(Video).filter_by(chapter_id=db_chapter.id, file_path=path_to_del).first()
+                        if video_to_del_obj:
+                            self.db_session.delete(video_to_del_obj)
 
             db_chapter.total_duration_seconds = chapter_total_duration
             overall_course_duration += chapter_total_duration
 
-        # 4. حذف فصل‌هایی از این دوره که در دیتابیس هستند ولی دیگر روی دیسک نیستند
+        # 4. After processing all chapters found on disk,
+        # remove chapters from DB that belong to this course but are no longer on disk.
         if not is_new_course:
-            db_chapter_paths_for_this_course = {
+            db_chapter_paths_for_this_course_in_db = {
+                # Querying for a tuple (cp[0])
                 cp[0] for cp in self.db_session.query(Chapter.path).filter_by(course_id=course_obj.id).all()
             }
-            chapters_to_delete_paths = db_chapter_paths_for_this_course - current_disk_chapter_paths
+            chapters_to_delete_paths = db_chapter_paths_for_this_course_in_db - current_disk_chapter_paths
             if chapters_to_delete_paths:
-                print(f"  حذف {len(chapters_to_delete_paths)} فصل گمشده از دوره '{course_obj.name}'...")
+                print(f"  Deleting {len(chapters_to_delete_paths)} missing chapters from course '{course_obj.name}'...")
                 for path_to_del in chapters_to_delete_paths:
                     chapter_to_del_obj = self.db_session.query(Chapter).filter_by(course_id=course_obj.id, path=path_to_del).first()
-                    if chapter_to_del_obj: self.db_session.delete(chapter_to_del_obj)
+                    if chapter_to_del_obj:
+                        self.db_session.delete(chapter_to_del_obj)  # Videos within are cascade-deleted by relationship
 
         course_obj.total_duration_seconds = overall_course_duration
-        print(f"پایان اسکن. مجموع زمان دوره: {overall_course_duration / 3600:.2f} ساعت.")
+        print(f"Finished scanning course '{course_obj.name}'. Total duration: {overall_course_duration / 3600:.2f} hours.")
 
-    def rescan_current_course(self):  # بدون تغییر نسبت به نسخه کامل قبلی
+    def rescan_current_course(self):
+        """Rescans the currently loaded course for file changes."""
         if not self.current_course:
-            self._call_gui_callback("show_message", "هیچ دوره‌ای برای بازاسکن انتخاب نشده است.", "warning")
+            self._call_gui_callback("show_message", "No course selected to rescan.", "warning")
             return
 
-        print(f"شروع بازاسکن برای دوره: {self.current_course.name}...")
-        self._call_gui_callback("show_message", f"درحال بازاسکن دوره: {self.current_course.name}...", "info")
-
+        self._call_gui_callback("show_message", f"Rescanning course: {self.current_course.name}...", "info")
         try:
-            self.db_session.refresh(self.current_course)  # اطمینان از به‌روز بودن دوره از دیتابیس
-            self._scan_and_save_course_content(self.current_course, self.current_course.base_directory_path, is_new_course=False)
-            self.db_session.commit()
-            self._call_gui_callback("show_message", "بازاسکن دوره با موفقیت انجام شد.", "info")
+            # Refresh the course object from DB to get latest state before scan
+            self.db_session.refresh(self.current_course)
+            self._scan_and_save_course_content(self.current_course,
+                                               self.current_course.base_directory_path,
+                                               is_new_course=False)
+            self.db_session.commit()  # Commit all changes from the rescan
+            self._call_gui_callback("show_message", "Course rescan completed successfully.", "info")
         except Exception as e:
             self.db_session.rollback()
-            print(f"خطا در حین بازاسکن دوره: {e}")
-            import traceback
+            print(f"Error during course rescan: {e}")
             traceback.print_exc()
-            self._call_gui_callback("show_message", f"خطا در بازاسکن: {e}", "error")
+            self._call_gui_callback("show_message", f"Error during rescan: {e}", "error")
 
+        # Refresh current_course object and GUI display after potential changes
         if self.current_course:
             self.db_session.refresh(self.current_course)
         self._call_gui_callback("display_course_info", self.current_course)
 
     def generate_schedule(self, num_days_str, max_daily_hours_str):
+        """Generates a viewing schedule for the current course."""
         if not self.current_course:
-            self._call_gui_callback("show_message", "لطفاً ابتدا یک دوره را بارگذاری یا انتخاب کنید.", "warning")
+            self._call_gui_callback("show_message", "Please load a course first to generate a schedule.", "warning")
             return []
-
         try:
             num_days = int(num_days_str)
-            # تبدیل ساعت به دقیقه، اجازه اعشار برای ساعت (مثلا 1.5 ساعت)
-            max_daily_minutes_input = int(float(max_daily_hours_str.replace(",", ".")) * 60)  # جایگزینی کاما با نقطه برای اعداد اعشاری
+            max_daily_minutes_input = int(float(max_daily_hours_str.replace(",", ".")) * 60)
         except ValueError:
-            self._call_gui_callback("show_message", "تعداد روزها و حداکثر ساعت روزانه باید عدد باشند (مثلاً برای ساعت: 1 یا 1.5).", "error")
+            self._call_gui_callback("show_message",
+                                    "Number of days and max daily hours must be valid numbers "
+                                    "(e.g., for hours: 1 or 1.5).", "error")
             return []
 
         if num_days <= 0 or max_daily_minutes_input <= 0:
-            self._call_gui_callback("show_message", "تعداد روزها و حداکثر ساعت روزانه باید مثبت باشند.", "error")
+            self._call_gui_callback("show_message", "Number of days and max daily hours must be positive.", "error")
             return []
 
-        all_videos_flat = []
-        # اطمینان از به‌روز بودن session
-        self.db_session.expire_all()  # برای اینکه داده‌ها از دیتابیس مجدد خوانده شوند
-
-        # current_course را مجددا از session بخوانید تا از به‌روز بودن آن مطمئن شوید
+        # Expire all data in session to ensure fresh data from DB for schedule generation
+        self.db_session.expire_all()
         refreshed_course = self.db_session.query(Course).filter_by(id=self.current_course.id).first()
         if not refreshed_course:
-            self._call_gui_callback("show_message", "خطا: دوره فعلی در دیتابیس یافت نشد.", "error")
+            self._call_gui_callback("show_message", "Error: Current course not found in database for scheduling.", "error")
             return []
-        self.current_course = refreshed_course
+        self.current_course = refreshed_course  # Use the refreshed object
 
-        for chapter in self.current_course.chapters:
-            for video in chapter.videos:
+        all_videos_flat = []
+        for chapter in self.current_course.chapters:  # Assumes chapters are ordered by relationship
+            for video in chapter.videos:  # Assumes videos are ordered by relationship
                 if video.watched_status != WatchedStatusEnum.WATCHED:
                     all_videos_flat.append({
                         "id": video.id,
@@ -364,59 +367,59 @@ class VideoSchedulerAppLogic:
                         "total_duration_seconds": video.duration_seconds,
                         "remaining_seconds": video.duration_seconds - video.watched_seconds,
                         "chapter_name": chapter.name,
-                        "current_offset_seconds": video.watched_seconds
+                        "current_offset_seconds": video.watched_seconds  # Where to start watching from
                     })
 
         if not all_videos_flat:
-            self._call_gui_callback("show_message", "تمام ویدیوهای این دوره مشاهده شده‌اند یا ویدیویی برای برنامه‌ریزی نیست.", "info")
+            self._call_gui_callback("show_message", "All videos in this course have been watched, or no videos to schedule.", "info")
             return []
 
         total_remaining_course_duration_seconds = sum(v["remaining_seconds"] for v in all_videos_flat)
 
+        # Check if completion is possible with given constraints
         if (total_remaining_course_duration_seconds / 60) > (num_days * max_daily_minutes_input) and total_remaining_course_duration_seconds > 0.1:
             min_daily_needed = (total_remaining_course_duration_seconds / 60) / num_days if num_days > 0 else float('inf')
-            message = (f"هشدار: با حداکثر {max_daily_minutes_input} دقیقه در روز، اتمام دوره در {num_days} روز ممکن نیست.\n"
-                       f"حداقل به روزی {min_daily_needed:.2f} دقیقه زمان نیاز دارید.")
+            message = (f"Warning: Completing the course in {num_days} days with {max_daily_minutes_input} minutes/day is not possible.\n"
+                       f"You need at least {min_daily_needed:.2f} minutes/day.")
             self._call_gui_callback("show_message", message, "warning")
+            # Continue to generate schedule anyway, it will show what's possible
 
         schedule_output_for_gui = []
         current_video_idx = 0
 
         for day_num in range(1, num_days + 1):
             daily_tasks_text = []
-            time_allocated_for_day_seconds = 0.0  # استفاده از float برای دقت بیشتر
+            time_allocated_for_day_seconds = 0.0
 
             while time_allocated_for_day_seconds < max_daily_minutes_input and current_video_idx < len(all_videos_flat):
                 video_to_watch = all_videos_flat[current_video_idx]
 
-                # اگر ویدیو هیچ زمان باقیمانده‌ای ندارد، از آن بگذر
-                if video_to_watch["remaining_seconds"] < 0.1:  # تلورانس کوچک
+                if video_to_watch["remaining_seconds"] < 0.1:  # Already watched or negligible remaining
                     current_video_idx += 1
                     continue
 
                 time_can_spend_on_this_video_today = float(max_daily_minutes_input) - time_allocated_for_day_seconds
-
                 watch_duration_this_session = min(video_to_watch["remaining_seconds"], time_can_spend_on_this_video_today)
 
-                if watch_duration_this_session < 0.1:  # اگر زمان قابل مشاهده خیلی کم است، برو به روز بعد یا ویدیوی بعد
+                if watch_duration_this_session < 0.1:  # Not enough time left today for a meaningful chunk
                     break
 
-                start_display_seconds = video_to_watch["current_offset_seconds"]
-                end_display_seconds = video_to_watch["current_offset_seconds"] + watch_duration_this_session
+                start_offset_s = video_to_watch["current_offset_seconds"]
+                end_offset_s = video_to_watch["current_offset_seconds"] + watch_duration_this_session
 
                 task_description = (
-                    f"فصل: {video_to_watch['chapter_name']}, ویدیو: {video_to_watch['name']}\n"
-                    f"  از {start_display_seconds // 60:.0f}:{start_display_seconds % 60:02.0f} "
-                    f"تا {end_display_seconds // 60:.0f}:{end_display_seconds % 60:02.0f} "
-                    f"({watch_duration_this_session // 60:.0f}دقیقه و {watch_duration_this_session % 60:02.0f}ثانیه)"
+                    f"Chapter: {video_to_watch['chapter_name']}, Video: {video_to_watch['name']}\n"
+                    f"  Watch from {start_offset_s // 60:.0f}m{start_offset_s % 60:02.0f}s "
+                    f"to {end_offset_s // 60:.0f}m{end_offset_s % 60:02.0f}s "
+                    f"(Duration this session: {watch_duration_this_session // 60:.0f}m{watch_duration_this_session % 60:02.0f}s)"
                 )
                 daily_tasks_text.append(task_description)
 
                 time_allocated_for_day_seconds += watch_duration_this_session
                 video_to_watch["remaining_seconds"] -= watch_duration_this_session
-                video_to_watch["current_offset_seconds"] += watch_duration_this_session
+                video_to_watch["current_offset_seconds"] += watch_duration_this_session  # Update for next potential session
 
-                if video_to_watch["remaining_seconds"] < 0.1:  # اگر ویدیو تمام شد
+                if video_to_watch["remaining_seconds"] < 0.1:  # Video finished in this session
                     current_video_idx += 1
 
             if daily_tasks_text:
@@ -426,31 +429,32 @@ class VideoSchedulerAppLogic:
                     "total_time_minutes": time_allocated_for_day_seconds / 60
                 })
 
-            if current_video_idx >= len(all_videos_flat):  # همه ویدیوها برنامه‌ریزی شدند
+            if current_video_idx >= len(all_videos_flat):  # All videos scheduled
                 break
 
-        if current_video_idx < len(all_videos_flat) and schedule_output_for_gui:  # اگر برنامه تولید شد ولی ویدیو باقی ماند
-            remaining_videos_count = 0
-            for i in range(current_video_idx, len(all_videos_flat)):
-                if all_videos_flat[i]["remaining_seconds"] > 0.1:
-                    remaining_videos_count += 1
-
-            if remaining_videos_count > 0:
-                self._call_gui_callback("show_message", f"هشدار: با این برنامه، {remaining_videos_count} ویدیو (یا بخش‌هایی از ویدیوها) باقی می‌ماند.", "warning")
+        if current_video_idx < len(all_videos_flat) and schedule_output_for_gui:
+            # Count videos that still have significant time remaining
+            remaining_videos_with_time = sum(1 for i in range(current_video_idx, len(all_videos_flat))
+                                             if all_videos_flat[i]["remaining_seconds"] > 0.1)
+            if remaining_videos_with_time > 0:
+                self._call_gui_callback("show_message",
+                                        f"Warning: With this plan, {remaining_videos_with_time} video(s) (or parts) will remain.",
+                                        "warning")
         elif schedule_output_for_gui:
-            self._call_gui_callback("show_message", "برنامه مشاهده با موفقیت تولید شد.", "info")
+            self._call_gui_callback("show_message", "Viewing schedule generated successfully.", "info")
 
         return schedule_output_for_gui
 
     def update_video_progress(self, video_id_str, new_watched_status_str, watched_seconds_str="0"):
+        """Updates the watched status and progress of a video."""
         try:
-            video_id = int(video_id_str.replace("vid_", ""))
+            video_id = int(video_id_str.replace("vid_", ""))  # Assuming vid_ prefix from Treeview iid
             video = self.db_session.query(Video).filter(Video.id == video_id).first()
             if not video:
-                self._call_gui_callback("show_message", f"ویدیو با شناسه {video_id} یافت نشد.", "error")
+                self._call_gui_callback("show_message", f"Error: Video with ID {video_id} not found.", "error")
                 return
 
-            new_status = WatchedStatusEnum(new_watched_status_str)
+            new_status = WatchedStatusEnum(new_watched_status_str)  # Convert string to Enum member
 
             if new_status == WatchedStatusEnum.WATCHED:
                 video.watched_seconds = video.duration_seconds
@@ -458,62 +462,73 @@ class VideoSchedulerAppLogic:
                 video.watched_seconds = 0.0
             elif new_status == WatchedStatusEnum.PARTIALLY_WATCHED:
                 try:
-                    # اطمینان از اینکه ورودی عدد است و در محدوده صحیح قرار دارد
-                    ws = float(watched_seconds_str.replace(",", "."))  # پشتیبانی از کاما و نقطه برای اعشار
+                    # Allow for float input, replace comma with dot for European locales
+                    ws = float(watched_seconds_str.replace(",", "."))
                     if 0 < ws < video.duration_seconds:
                         video.watched_seconds = ws
-                    elif ws >= video.duration_seconds:  # اگر بیشتر از کل ویدیو وارد شد، کامل در نظر بگیر
+                    elif ws >= video.duration_seconds:  # If user enters more than duration, mark as watched
                         video.watched_seconds = video.duration_seconds
-                        new_status = WatchedStatusEnum.WATCHED  # وضعیت را هم به کامل تغییر بده
-                    else:  # اگر 0 یا منفی بود
-                        video.watched_seconds = 0
-                        new_status = WatchedStatusEnum.UNWATCHED  # وضعیت را هم به دیده نشده تغییر بده
+                        new_status = WatchedStatusEnum.WATCHED
+                    else:  # If 0 or negative, mark as unwatched
+                        video.watched_seconds = 0.0
+                        new_status = WatchedStatusEnum.UNWATCHED
                 except ValueError:
-                    self._call_gui_callback("show_message", f"مقدار نامعتبر برای زمان مشاهده شده: '{watched_seconds_str}'. باید عدد باشد.", "error")
-                    return  # ادامه نده اگر مقدار نامعتبر است
+                    self._call_gui_callback("show_message",
+                                            f"Invalid value for watched time: '{watched_seconds_str}'. Must be a number.",
+                                            "error")
+                    return  # Do not proceed if value is invalid
 
             video.watched_status = new_status
             self.db_session.commit()
-            self._call_gui_callback("show_message", f"وضعیت ویدیوی '{video.name}' به‌روز شد.", "info")
-            # self.db_session.expire(video) # برای اطمینان از خواندن مجدد از دیتابیس در صورت نیاز
+            self._call_gui_callback("show_message", f"Video '{video.name}' status updated.", "info")
+            # Refresh GUI to show updated status
             self._call_gui_callback("display_course_info", self.current_course)
 
-        except ValueError as ve:  # برای خطای تبدیل به int یا float یا enum
-            self._call_gui_callback("show_message", f"خطا در مقدار ورودی: {ve}", "error")
+        except ValueError as ve:  # Handles errors from int() or WatchedStatusEnum() conversion
+            self._call_gui_callback("show_message", f"Error in input value: {ve}", "error")
         except Exception as e:
             self.db_session.rollback()
-            self._call_gui_callback("show_message", f"خطا در به‌روزرسانی وضعیت ویدیو: {e}", "error")
+            self._call_gui_callback("show_message", f"Error updating video status: {e}", "error")
+            traceback.print_exc()
 
     def get_all_courses(self):
+        """Retrieves all courses from the database, ordered by name."""
         return self.db_session.query(Course).order_by(Course.name).all()
 
     def load_course_by_id(self, course_id):
+        """Loads a specific course by its ID and updates the GUI."""
         course = self.db_session.query(Course).filter(Course.id == course_id).first()
         if course:
             self.current_course = course
             self._call_gui_callback("display_course_info", self.current_course)
-            self._call_gui_callback("show_message", f"دوره '{course.name}' بارگذاری شد.", "info")
-        else:
+            self._call_gui_callback("show_message", f"Course '{course.name}' loaded.", "info")
+        else:  # Should not happen if ID comes from a valid list
             self.current_course = None
             self._call_gui_callback("display_course_info", None)
-            self._call_gui_callback("show_message", f"دوره با شناسه {course_id} یافت نشد.", "error")
+            self._call_gui_callback("show_message", f"Error: Course with ID {course_id} not found.", "error")
 
     def delete_course(self, course_id):
+        """Deletes a course (and its chapters/videos via cascade) from the database."""
         course_to_delete = self.db_session.query(Course).filter(Course.id == course_id).first()
         if course_to_delete:
             course_name = course_to_delete.name
             self.db_session.delete(course_to_delete)
             self.db_session.commit()
+
+            # If the deleted course was the current one, clear current_course
             if self.current_course and self.current_course.id == course_id:
                 self.current_course = None
-                self._call_gui_callback("display_course_info", None)
-            self._call_gui_callback("show_message", f"دوره '{course_name}' با موفقیت حذف شد.", "info")
-            if "update_course_list_display" in self.gui_callbacks:  # بررسی وجود callback
+                self._call_gui_callback("display_course_info", None)  # Clear details view
+
+            self._call_gui_callback("show_message", f"Course '{course_name}' deleted successfully.", "info")
+            # Refresh the list of courses in the GUI
+            if "update_course_list_display" in self.gui_callbacks:
                 self.gui_callbacks["update_course_list_display"]()
         else:
-            self._call_gui_callback("show_message", f"دوره با شناسه {course_id} برای حذف یافت نشد.", "error")
+            self._call_gui_callback("show_message", f"Error: Course with ID {course_id} not found for deletion.", "error")
 
     def close_db_session(self):
+        """Closes the database session when the application exits."""
         if self.db_session:
             self.db_session.close()
-            print("Session پایگاه داده بسته شد.")
+            print("Database session closed.")
