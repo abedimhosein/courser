@@ -1,12 +1,15 @@
-# app_logic.py
-
 import os
 import traceback
 from tkinter import filedialog
+
 from moviepy import VideoFileClip
 
 from database import (
-    get_db_session, Course, Chapter, Video, WatchedStatusEnum
+    get_db_session,
+    Course,
+    Chapter,
+    Video,
+    WatchedStatusEnum,
 )
 
 # Supported video file extensions (case-insensitive)
@@ -28,7 +31,8 @@ class VideoSchedulerAppLogic:
         if callback_name in self.gui_callbacks and callable(self.gui_callbacks[callback_name]):
             self.gui_callbacks[callback_name](*args)
 
-    def get_video_duration(self, video_path):
+    @staticmethod
+    def get_video_duration(video_path):
         """
         Extracts video duration using MoviePy.
         Returns duration in seconds (float) or None on error.
@@ -50,7 +54,8 @@ class VideoSchedulerAppLogic:
             # traceback.print_exc() # Uncomment for full stack trace during debugging
             return None
 
-    def find_subtitle(self, video_path):
+    @staticmethod
+    def find_subtitle(video_path):
         """Finds a subtitle file with the same base name as the video."""
         base, _ = os.path.splitext(video_path)
         for sub_ext in ['.srt', '.vtt', '.ass']:  # Common subtitle extensions
