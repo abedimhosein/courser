@@ -32,14 +32,6 @@ class VideoSchedulerGUI(ctk.CTk):
 
         ctk.CTkLabel(self.courses_management_frame, text="My Courses", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=10, padx=10)
 
-        # --- Add draggable divider between course_listbox_frame and details_and_schedule_frame ---
-        self.divider = tk.Frame(main_frame, width=5, bg="gray", cursor="sb_h_double_arrow")
-        self.divider.pack(side=tk.LEFT, fill=tk.Y, padx=0)
-
-        # Bind dragging events to divider
-        self.divider.bind("<Button-1>", self.start_drag)
-        self.divider.bind("<B1-Motion>", self.dragging)
-
         # --- Scrollable area using Canvas for both horizontal and vertical scrollbars ---
         canvas_frame = ctk.CTkFrame(self.courses_management_frame)
         canvas_frame.pack(fill=ctk.BOTH, expand=True, padx=5, pady=(0, 5))
@@ -146,25 +138,6 @@ class VideoSchedulerGUI(ctk.CTk):
         self.update_course_list_display()
         # Handle window close event
         self.protocol("WM_DELETE_WINDOW", self.on_closing_application)
-
-        # Initialize the prev_x variable for dragging
-        self.prev_x = None  # Initial position for mouse during dragging
-
-    def start_drag(self, event):
-        """Stores the initial position of the mouse when dragging starts."""
-        self.prev_x = event.x
-
-    def dragging(self, event):
-        """Handles the dragging motion and resizes the frames accordingly."""
-        if self.prev_x is not None:
-            delta_x = event.x - self.prev_x  # Calculate how much the mouse has moved
-            new_left_width = self.courses_management_frame.winfo_width() + delta_x  # New width for left frame
-
-            # Set limits for resizing
-            if 100 < new_left_width < self.winfo_width() - 200:  # Limits
-                self.courses_management_frame.configure(width=new_left_width)  # Resize left frame
-                self.details_and_schedule_frame.configure(width=self.winfo_width() - new_left_width - 10)  # Resize right frame
-                self.prev_x = event.x
 
     def on_rescan_button_click(self):
         """Handles the rescan button click event."""
