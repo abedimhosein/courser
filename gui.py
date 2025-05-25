@@ -1,7 +1,6 @@
 from tkinter import ttk, messagebox
-
 import customtkinter as ctk
-
+import tkinter as tk
 from database import WatchedStatusEnum, Video
 
 
@@ -27,27 +26,64 @@ class VideoSchedulerGUI(ctk.CTk):
         main_frame.pack(fill=ctk.BOTH, expand=True, padx=10, pady=10)
 
         # --- Left panel: Course Management ---
-        courses_management_frame = ctk.CTkFrame(main_frame, width=300)  # Fixed width for left panel
-        courses_management_frame.pack(side=ctk.LEFT, fill=ctk.Y, padx=(0, 5), pady=0)
-        courses_management_frame.pack_propagate(False)  # Prevent frame from shrinking to content
+        self.courses_management_frame = ctk.CTkFrame(main_frame, width=300)  # Fixed width for left panel
+        self.courses_management_frame.pack(side=ctk.LEFT, fill=ctk.Y, padx=(0, 5), pady=0)
+        self.courses_management_frame.pack_propagate(False)  # Prevent frame from shrinking to content
 
-        ctk.CTkLabel(courses_management_frame, text="My Courses", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=10, padx=10)
+        ctk.CTkLabel(self.courses_management_frame, text="My Courses", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=10, padx=10)
 
-        self.course_listbox_frame = ctk.CTkScrollableFrame(courses_management_frame, label_text="")  # For the list of courses
-        self.course_listbox_frame.pack(fill=ctk.BOTH, expand=True, padx=5, pady=(0, 5))
+        # --- Add draggable divider between course_listbox_frame and details_and_schedule_frame ---
+        self.divider = tk.Frame(main_frame, width=5, bg="gray", cursor="sb_h_double_arrow")
+        self.divider.pack(side=tk.LEFT, fill=tk.Y, padx=0)
 
-        btn_add_course = ctk.CTkButton(courses_management_frame, text="Add/Load New Course", command=self.app_logic.select_and_load_course)
+        # Bind dragging events to divider
+        self.divider.bind("<Button-1>", self.start_drag)
+        self.divider.bind("<B1-Motion>", self.dragging)
+
+        # --- Scrollable area using Canvas for both horizontal and vertical scrollbars ---
+        canvas_frame = ctk.CTkFrame(self.courses_management_frame)
+        canvas_frame.pack(fill=ctk.BOTH, expand=True, padx=5, pady=(0, 5))
+
+        canvas = tk.Canvas(canvas_frame, highlightthickness=0)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Scrollbars
+        v_scrollbar = tk.Scrollbar(canvas_frame, orient="vertical", command=canvas.yview)
+        v_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        h_scrollbar = tk.Scrollbar(self.courses_management_frame, orient="horizontal", command=canvas.xview)
+        h_scrollbar.pack(fill=tk.X, padx=5, pady=(0, 5))
+
+        canvas.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+
+        # Internal scrollable frame
+        self.course_listbox_frame = ctk.CTkFrame(canvas)
+        canvas_window = canvas.create_window((0, 0), window=self.course_listbox_frame, anchor="nw")
+
+        # Update scrollregion dynamically
+        def update_scrollregion(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        self.course_listbox_frame.bind("<Configure>", update_scrollregion)
+
+        # Resize internal frame width to match canvas when window resizes
+        def resize_canvas(event):
+            canvas.itemconfig(canvas_window, width=event.width)
+
+        canvas.bind("<Configure>", resize_canvas)
+
+        btn_add_course = ctk.CTkButton(self.courses_management_frame, text="Add/Load New Course", command=self.app_logic.select_and_load_course)
         btn_add_course.pack(pady=(10, 5), fill=ctk.X, padx=5)
 
-        btn_rescan_course = ctk.CTkButton(courses_management_frame, text="Rescan Current Course", command=self.on_rescan_button_click)
+        btn_rescan_course = ctk.CTkButton(self.courses_management_frame, text="Rescan Current Course", command=self.on_rescan_button_click)
         btn_rescan_course.pack(pady=5, fill=ctk.X, padx=5)
 
         # --- Right panel: Course Details and Scheduling ---
-        details_and_schedule_frame = ctk.CTkFrame(main_frame)
-        details_and_schedule_frame.pack(side=ctk.LEFT, fill=ctk.BOTH, expand=True)  # Takes remaining space
+        self.details_and_schedule_frame = ctk.CTkFrame(main_frame)
+        self.details_and_schedule_frame.pack(side=ctk.LEFT, fill=ctk.BOTH, expand=True)  # Takes remaining space
 
         # Tab view for details and schedule
-        self.tab_view = ctk.CTkTabview(details_and_schedule_frame)
+        self.tab_view = ctk.CTkTabview(self.details_and_schedule_frame)
         self.tab_view.pack(fill=ctk.BOTH, expand=True, padx=5, pady=5)
         self.tab_view.add("Course Details")
         self.tab_view.add("Viewing Schedule")
@@ -96,15 +132,10 @@ class VideoSchedulerGUI(ctk.CTk):
         self.entry_max_daily_hours.pack(side=ctk.LEFT, padx=(0, 10))
         self.entry_max_daily_hours.insert(0, "1.0")  # Allow float input
 
-        btn_generate_schedule = ctk.CTkButton(schedule_input_controls_frame, text="Generate Schedule",
-                                              command=self.generate_and_display_schedule)
+        btn_generate_schedule = ctk.CTkButton(schedule_input_controls_frame, text="Generate Schedule", command=self.generate_and_display_schedule)
         btn_generate_schedule.pack(side=ctk.LEFT, padx=10)
 
-        self.schedule_display_textbox = ctk.CTkTextbox(schedule_tab_content, wrap=ctk.WORD, state=ctk.DISABLED,
-                                                       font=('Segoe UI', 10))
-        # For LTR, no special tag needed for basic text alignment, but can be used for styling.
-        # If specific lines needed different justification, tags would be useful.
-        # self.schedule_display_textbox._textbox.tag_configure("schedule_style", justify="left") # Example
+        self.schedule_display_textbox = ctk.CTkTextbox(schedule_tab_content, wrap=ctk.WORD, state=ctk.DISABLED, font=('Segoe UI', 10))
         self.schedule_display_textbox.pack(fill=ctk.BOTH, expand=True, padx=5, pady=5)
 
         # --- Status Bar ---
@@ -115,6 +146,25 @@ class VideoSchedulerGUI(ctk.CTk):
         self.update_course_list_display()
         # Handle window close event
         self.protocol("WM_DELETE_WINDOW", self.on_closing_application)
+
+        # Initialize the prev_x variable for dragging
+        self.prev_x = None  # Initial position for mouse during dragging
+
+    def start_drag(self, event):
+        """Stores the initial position of the mouse when dragging starts."""
+        self.prev_x = event.x
+
+    def dragging(self, event):
+        """Handles the dragging motion and resizes the frames accordingly."""
+        if self.prev_x is not None:
+            delta_x = event.x - self.prev_x  # Calculate how much the mouse has moved
+            new_left_width = self.courses_management_frame.winfo_width() + delta_x  # New width for left frame
+
+            # Set limits for resizing
+            if 100 < new_left_width < self.winfo_width() - 200:  # Limits
+                self.courses_management_frame.configure(width=new_left_width)  # Resize left frame
+                self.details_and_schedule_frame.configure(width=self.winfo_width() - new_left_width - 10)  # Resize right frame
+                self.prev_x = event.x
 
     def on_rescan_button_click(self):
         """Handles the rescan button click event."""
