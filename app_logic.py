@@ -112,8 +112,7 @@ class VideoSchedulerAppLogic:
     def _scan_and_save_course_content(self, course_obj, directory_path, is_new_course=False):
         """
         Scans the course directory for chapters and videos, then saves/updates them in the database.
-        - If subdirectories exist, they are chapters. Videos in root are ignored.
-        - If no subdirectories, the root directory is the single chapter.
+        Supports nested directory structure and videos at any level.
         """
         print(f"Scanning content for course '{course_obj.name}' at path: {directory_path}")
         overall_course_duration = 0.0
@@ -122,151 +121,166 @@ class VideoSchedulerAppLogic:
         self._call_gui_callback("show_progress_dialog", "Scanning course...")
         self._call_gui_callback("update_progress", 0, "Initializing scan...")
 
-        # Sets to keep track of items found on disk during this scan
-        current_disk_chapter_paths = set()
-
-        # 1. Determine potential chapters (subdirectories or the root itself)
-        potential_chapters_info = []
-
         if not os.path.isdir(directory_path):
             self._call_gui_callback("hide_progress_dialog")
             raise FileNotFoundError(f"Course base path '{directory_path}' not found or is not a directory.")
 
-        # Find actual subdirectories to be treated as chapters
-        actual_subdirectories = []
-        try:
-            self._call_gui_callback("update_progress", 0.05, "Scanning directories...")
-            for item_name in os.listdir(directory_path):
-                item_full_path = os.path.join(directory_path, item_name)
-                if os.path.isdir(item_full_path):
-                    actual_subdirectories.append(item_name)
-        except PermissionError:
-            self._call_gui_callback("hide_progress_dialog")
-            print(f"Permission denied to read directory: {directory_path}")
-            raise  # Re-raise to be caught by the caller
-
-        if actual_subdirectories:
-            print(f"Found subdirectories (chapters): {actual_subdirectories}")
-            for subdir_name in sorted(actual_subdirectories):  # Sort for consistent ordering
-                potential_chapters_info.append({
-                    'name': subdir_name,
-                    'path': os.path.join(directory_path, subdir_name)
-                })
-        else:
-            # No subdirectories found, the root directory itself is the single chapter
-            print("No subdirectories found. Treating root directory as a single chapter.")
-            potential_chapters_info.append({
-                'name': course_obj.name,  # Chapter name will be the course name
-                'path': directory_path
-            })
-
-        if not potential_chapters_info:
-            print(f"Warning: No chapters found to process in '{directory_path}'.")
-            course_obj.total_duration_seconds = 0.0
-            self._call_gui_callback("hide_progress_dialog")
-            return
-
-        # 2. Process each identified chapter
-        total_chapters = len(potential_chapters_info)
-        for chapter_index, chap_info in enumerate(potential_chapters_info, 1):
-            # Update progress
-            progress = (chapter_index - 1) / total_chapters
-            self._call_gui_callback("update_progress", progress, f"Processing chapter {chapter_index} of {total_chapters}...")
-
-            disk_chapter_order = chapter_index
-            chapter_path_on_disk = chap_info['path']
-            chapter_name_on_disk = chap_info['name']
-            current_disk_chapter_paths.add(chapter_path_on_disk)
-
-            db_chapter = None
-            if not is_new_course:  # For existing courses, try to find the chapter by its path
-                db_chapter = self.db_session.query(Chapter).filter_by(
-                    course_id=course_obj.id,
-                    path=chapter_path_on_disk
-                ).first()
-
-            if not db_chapter:  # Chapter is new to the database for this course
-                print(f"  Creating new chapter entry: '{chapter_name_on_disk}' (Order: {disk_chapter_order})")
-                db_chapter = Chapter(
-                    name=chapter_name_on_disk,
-                    path=chapter_path_on_disk,
-                    order_in_course=disk_chapter_order,
-                    course_id=course_obj.id
-                )
-                self.db_session.add(db_chapter)
-                self.db_session.flush()
-            else:  # Chapter already exists, update its info
-                print(f"  Updating existing chapter: '{chapter_name_on_disk}' (New Order: {disk_chapter_order})")
-                db_chapter.name = chapter_name_on_disk
-                db_chapter.order_in_course = disk_chapter_order
-
-            # 3. Scan for videos within the current chapter path
-            chapter_total_duration = 0.0
-            disk_video_order = 0
-            current_disk_video_paths_in_chapter = set()
-
-            # Get all files in the chapter directory
+        # First, scan all directories and files to build the tree structure
+        self._call_gui_callback("update_progress", 0.05, "Building directory structure...")
+        
+        def scan_directory(dir_path, parent_chapter=None, level=0):
+            """Recursively scan directory and build chapter/video structure"""
+            items = []
+            videos = []  # List to store videos at current level
+            
             try:
-                chapter_files = os.listdir(chapter_path_on_disk)
+                # First, collect all items in the directory
+                dir_items = []
+                for item_name in sorted(os.listdir(dir_path)):
+                    item_path = os.path.join(dir_path, item_name)
+                    dir_items.append((item_name, item_path, os.path.isdir(item_path)))
+                
+                # Process directories first
+                for item_name, item_path, is_dir in dir_items:
+                    if is_dir:
+                        # Create chapter for this directory
+                        chapter = {
+                            'name': item_name,
+                            'path': item_path,
+                            'parent': parent_chapter,
+                            'level': level,
+                            'videos': [],
+                            'subchapters': []
+                        }
+                        # Recursively scan subdirectory
+                        sub_items, sub_videos = scan_directory(item_path, chapter, level + 1)
+                        chapter['subchapters'] = sub_items
+                        chapter['videos'] = sub_videos
+                        # Only add chapter if it has videos or subchapters with videos
+                        if sub_videos or any(len(sub['videos']) > 0 or len(sub['subchapters']) > 0 for sub in sub_items):
+                            items.append(chapter)
+                    elif os.path.splitext(item_name)[1].lower() in VIDEO_EXTENSIONS:
+                        # Add video to current level videos
+                        videos.append({
+                            'name': item_name,
+                            'path': item_path,
+                            'parent': parent_chapter,
+                            'level': level
+                        })
             except PermissionError:
-                print(f"Permission denied to read chapter directory: {chapter_path_on_disk}")
-                continue
+                print(f"Permission denied to read directory: {dir_path}")
+            
+            return items, videos
 
-            # Filter for video files
-            video_files = [f for f in chapter_files if os.path.splitext(f)[1].lower() in VIDEO_EXTENSIONS]
-            total_videos = len(video_files)
+        # Build the tree structure
+        course_structure, root_videos = scan_directory(directory_path)
+        
+        # Only create root chapter if there are videos at root level
+        if root_videos:
+            root_chapter = {
+                'name': "Videos",  # Generic name for root level videos
+                'path': directory_path,
+                'parent': None,
+                'level': 0,
+                'videos': root_videos,
+                'subchapters': course_structure
+            }
+            course_structure = [root_chapter]
+        
+        # Count total items for progress calculation
+        def count_items(items):
+            count = 0
+            for item in items:
+                count += 1  # Count the chapter itself
+                count += len(item['videos'])  # Count videos in this chapter
+                if 'subchapters' in item:
+                    count += count_items(item['subchapters'])
+            return count
 
-            for video_index, video_filename in enumerate(sorted(video_files), 1):
-                # Update progress for videos
-                video_progress = (chapter_index - 1 + video_index / total_videos) / total_chapters
-                self._call_gui_callback("update_progress", video_progress, 
-                    f"Processing chapter {chapter_index} of {total_chapters} - video {video_index} of {total_videos}...")
+        total_items = count_items(course_structure)
+        processed_items = 0
 
-                disk_video_order += 1
-                video_path = os.path.join(chapter_path_on_disk, video_filename)
-                current_disk_video_paths_in_chapter.add(video_path)
+        def process_items(items, parent_db_chapter=None, order_counter=1):
+            """Process items and save to database"""
+            nonlocal processed_items, overall_course_duration
+            total_duration = 0.0
+            current_order = order_counter
+            
+            for item in items:
+                processed_items += 1
+                progress = processed_items / total_items
+                self._call_gui_callback("update_progress", progress, 
+                    f"Processing item {processed_items} of {total_items}...")
 
-                # Get video duration
-                video_duration = self.get_video_duration(video_path)
-                if video_duration is None:
-                    print(f"Warning: Could not get duration for video: {video_path}")
-                    video_duration = 0.0
-
-                # Find subtitle if exists
-                subtitle_path = self.find_subtitle(video_path)
-
-                # Check if video already exists in database
-                db_video = None
+                # Create or update chapter in database
+                db_chapter = None
                 if not is_new_course:
-                    db_video = self.db_session.query(Video).filter_by(
-                        chapter_id=db_chapter.id,
-                        file_path=video_path
+                    db_chapter = self.db_session.query(Chapter).filter_by(
+                        course_id=course_obj.id,
+                        path=item['path']
                     ).first()
 
-                if not db_video:  # New video
-                    print(f"    Adding new video: '{video_filename}' (Order: {disk_video_order})")
-                    db_video = Video(
-                        name=video_filename,
-                        file_path=video_path,
-                        duration_seconds=video_duration,
-                        order_in_chapter=disk_video_order,
-                        chapter_id=db_chapter.id,
-                        subtitle_path=subtitle_path
+                if not db_chapter:
+                    db_chapter = Chapter(
+                        name=item['name'],
+                        path=item['path'],
+                        order_in_course=current_order,  # Use current_order instead of order_counter
+                        course_id=course_obj.id
                     )
-                    self.db_session.add(db_video)
-                else:  # Update existing video
-                    print(f"    Updating existing video: '{video_filename}' (New Order: {disk_video_order})")
-                    db_video.name = video_filename
-                    db_video.file_path = video_path
-                    db_video.duration_seconds = video_duration
-                    db_video.order_in_chapter = disk_video_order
-                    db_video.subtitle_path = subtitle_path
+                    self.db_session.add(db_chapter)
+                    self.db_session.flush()
+                else:
+                    db_chapter.name = item['name']
+                    db_chapter.order_in_course = current_order  # Use current_order instead of order_counter
 
-                chapter_total_duration += video_duration
+                # Process videos in this chapter
+                chapter_duration = 0.0
+                video_order = 1
+                for video_item in item['videos']:
+                    video_duration = self.get_video_duration(video_item['path'])
+                    if video_duration is None:
+                        print(f"Warning: Could not get duration for video: {video_item['path']}")
+                        video_duration = 0.0
 
-            # Update chapter duration
-            db_chapter.total_duration_seconds = chapter_total_duration
-            overall_course_duration += chapter_total_duration
+                    subtitle_path = self.find_subtitle(video_item['path'])
+
+                    db_video = None
+                    if not is_new_course:
+                        db_video = self.db_session.query(Video).filter_by(
+                            chapter_id=db_chapter.id,
+                            file_path=video_item['path']
+                        ).first()
+
+                    if not db_video:
+                        db_video = Video(
+                            name=video_item['name'],
+                            file_path=video_item['path'],
+                            duration_seconds=video_duration,
+                            order_in_chapter=video_order,
+                            chapter_id=db_chapter.id,
+                            subtitle_path=subtitle_path
+                        )
+                        self.db_session.add(db_video)
+                    else:
+                        db_video.name = video_item['name']
+                        db_video.file_path = video_item['path']
+                        db_video.duration_seconds = video_duration
+                        db_video.order_in_chapter = video_order
+                        db_video.subtitle_path = subtitle_path
+
+                    chapter_duration += video_duration
+                    video_order += 1
+
+                # Process subchapters
+                subchapter_duration = process_items(item['subchapters'], db_chapter, current_order + 1)
+                db_chapter.total_duration_seconds = chapter_duration + subchapter_duration
+                total_duration += db_chapter.total_duration_seconds
+                current_order += 1  # Increment order for next chapter
+
+            return total_duration
+
+        # Process all items
+        overall_course_duration = process_items(course_structure)
 
         # Update course total duration
         course_obj.total_duration_seconds = overall_course_duration

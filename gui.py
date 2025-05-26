@@ -116,6 +116,26 @@ class VideoSchedulerGUI(ctk.CTk):
         self.lbl_course_duration = ctk.CTkLabel(course_details_tab_content, text="", anchor="w")
         self.lbl_course_duration.pack(pady=5, fill=ctk.X, padx=10)
 
+        # Add buttons frame for collapse/expand
+        tree_buttons_frame = ctk.CTkFrame(course_details_tab_content)
+        tree_buttons_frame.pack(fill=ctk.X, padx=10, pady=(0, 5))
+        
+        btn_collapse_all = ctk.CTkButton(
+            tree_buttons_frame,
+            text="Collapse All",
+            width=100,
+            command=self.collapse_all_tree_items
+        )
+        btn_collapse_all.pack(side=ctk.LEFT, padx=(0, 5))
+        
+        btn_expand_all = ctk.CTkButton(
+            tree_buttons_frame,
+            text="Expand All",
+            width=100,
+            command=self.expand_all_tree_items
+        )
+        btn_expand_all.pack(side=ctk.LEFT)
+
         # Treeview for chapters and videos
         style = ttk.Style()
         style.theme_use("default")
@@ -237,13 +257,18 @@ class VideoSchedulerGUI(ctk.CTk):
                          text=f"{course_data_object.name} (Full Course)",
                          values=(f"{total_hours:.0f}h {total_minutes:.0f}m", ""), open=True)
 
-        for chapter in course_data_object.chapters:  # Assumes chapters are ordered by relationship
+        # Get all chapters and sort them by order_in_course
+        chapters = sorted(course_data_object.chapters, key=lambda x: x.order_in_course)
+        
+        for chapter in chapters:  # Now using sorted chapters
             chap_minutes_total = chapter.total_duration_seconds / 60
             chap_seconds_rem = chapter.total_duration_seconds % 60
 
             chapter_node_id = f"chap_{chapter.id}"
+            # Format chapter number with leading zero
+            chapter_number = f"{chapter.order_in_course:02d}"
             self.tree.insert(course_node_id, "end", iid=chapter_node_id,
-                             text=f"Chapter {chapter.order_in_course}: {chapter.name}",
+                             text=f"Chapter {chapter_number}: {chapter.name}",
                              values=(f"{chap_minutes_total:.0f}m {chap_seconds_rem:.0f}s", ""), open=True)
 
             for video in chapter.videos:  # Assumes videos are ordered by relationship
@@ -401,19 +426,31 @@ class VideoSchedulerGUI(ctk.CTk):
 
     def _on_mousewheel(self, event):
         """Handle vertical scrolling with mouse wheel"""
-        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        # Only scroll if the content is larger than the visible area
+        if self.canvas.winfo_height() < self.course_listbox_frame.winfo_height():
+            self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _on_shift_mousewheel(self, event):
         """Handle horizontal scrolling with Shift + mouse wheel"""
-        self.canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
+        # Only scroll if the content is wider than the visible area
+        if self.canvas.winfo_width() < self.course_listbox_frame.winfo_width():
+            self.canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _on_canvas_configure(self, event):
         """Update the width of the internal frame when canvas is resized"""
         self.canvas.itemconfig(self.canvas_window, width=event.width)
+        # Update scroll region after resize
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def _on_frame_configure(self, event):
         """Update the scroll region when the internal frame changes size"""
+        # Update scroll region
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        # Show/hide scrollbars based on content size
+        if self.canvas.winfo_height() >= self.course_listbox_frame.winfo_height():
+            self.canvas.yview_moveto(0)  # Reset vertical scroll position
+        if self.canvas.winfo_width() >= self.course_listbox_frame.winfo_width():
+            self.canvas.xview_moveto(0)  # Reset horizontal scroll position
 
     def _start_resize(self, event):
         """Start the resize operation"""
@@ -525,3 +562,29 @@ class VideoSchedulerGUI(ctk.CTk):
         # Force update
         if self.progress_dialog is not None:
             self.progress_dialog.update()
+
+    def collapse_all_tree_items(self):
+        """Collapses all items in the treeview"""
+        for item in self.tree.get_children():
+            self.tree.item(item, open=False)
+            # Also collapse all children recursively
+            self._collapse_children(item)
+
+    def _collapse_children(self, parent):
+        """Recursively collapses all children of a tree item"""
+        for child in self.tree.get_children(parent):
+            self.tree.item(child, open=False)
+            self._collapse_children(child)
+
+    def expand_all_tree_items(self):
+        """Expands all items in the treeview"""
+        for item in self.tree.get_children():
+            self.tree.item(item, open=True)
+            # Also expand all children recursively
+            self._expand_children(item)
+
+    def _expand_children(self, parent):
+        """Recursively expands all children of a tree item"""
+        for child in self.tree.get_children(parent):
+            self.tree.item(child, open=True)
+            self._expand_children(child)
