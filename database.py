@@ -11,22 +11,24 @@ Base = declarative_base()
 
 # Enum for video watch status
 class WatchedStatusEnum(enum.Enum):
-    UNWATCHED = "unwatched"
-    PARTIALLY_WATCHED = "partially_watched"
-    WATCHED = "watched"
+    UNWATCHED = "Unwatched"
+    PARTIALLY_WATCHED = "Partially Watched"
+    WATCHED = "Watched"
 
 
 class Course(Base):
     __tablename__ = 'courses'
 
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, unique=True, nullable=False)
-    base_directory_path = Column(String, unique=True, nullable=False)
-    total_duration_seconds = Column(Float, default=0.0)
-    date_added = Column(DateTime, default=datetime.utcnow)
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False)
+    path = Column(String, nullable=False)
+    total_duration_seconds = Column(Float, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationship to chapters, ordered by their order in the course
-    chapters = relationship("Chapter", back_populates="course", cascade="all, delete-orphan", order_by="Chapter.order_in_course")
+    chapters = relationship("Chapter", back_populates="course", cascade="all, delete-orphan")
+    schedules = relationship("Schedule", back_populates="course", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<Course(name='{self.name}')>"
@@ -35,16 +37,16 @@ class Course(Base):
 class Chapter(Base):
     __tablename__ = 'chapters'
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False)
     path = Column(String, nullable=False)  # Full path to the chapter directory
     order_in_course = Column(Integer, nullable=False)  # Order of this chapter within the course
-    total_duration_seconds = Column(Float, default=0.0)
+    total_duration_seconds = Column(Float, default=0)
     course_id = Column(Integer, ForeignKey('courses.id'), nullable=False)
 
     course = relationship("Course", back_populates="chapters")
     # Relationship to videos, ordered by their order in the chapter
-    videos = relationship("Video", back_populates="chapter", cascade="all, delete-orphan", order_by="Video.order_in_chapter")
+    videos = relationship("Video", back_populates="chapter", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<Chapter(name='{self.name}', course_id={self.course_id})>"
@@ -53,20 +55,65 @@ class Chapter(Base):
 class Video(Base):
     __tablename__ = 'videos'
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False)  # Video file name
-    file_path = Column(String, unique=True, nullable=False)  # Full path to the video file
+    path = Column(String, nullable=False)
     duration_seconds = Column(Float, nullable=False)
+    watched_seconds = Column(Float, default=0)
+    watched_status = Column(SAEnum(WatchedStatusEnum), default=WatchedStatusEnum.UNWATCHED)
     order_in_chapter = Column(Integer, nullable=False)  # Order of this video within the chapter
-    watched_status = Column(SAEnum(WatchedStatusEnum), default=WatchedStatusEnum.UNWATCHED, nullable=False)
-    watched_seconds = Column(Float, default=0.0, nullable=False)  # How much of the video has been watched
-    subtitle_path = Column(String, nullable=True)  # Optional path to subtitle file
     chapter_id = Column(Integer, ForeignKey('chapters.id'), nullable=False)
+    subtitle_path = Column(String, nullable=True)  # Path to subtitle file if exists
 
     chapter = relationship("Chapter", back_populates="videos")
+    schedule_tasks = relationship("ScheduleTask", back_populates="video")
 
     def __repr__(self):
         return f"<Video(name='{self.name}', chapter_id={self.chapter_id})>"
+
+
+class Schedule(Base):
+    __tablename__ = 'schedules'
+
+    id = Column(Integer, primary_key=True)
+    course_id = Column(Integer, ForeignKey('courses.id'), nullable=False)
+    num_days = Column(Integer, nullable=False)
+    max_daily_minutes = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    course = relationship("Course", back_populates="schedules")
+    daily_schedules = relationship("DailySchedule", back_populates="schedule", cascade="all, delete-orphan")
+
+
+class DailySchedule(Base):
+    __tablename__ = 'daily_schedules'
+
+    id = Column(Integer, primary_key=True)
+    schedule_id = Column(Integer, ForeignKey('schedules.id'), nullable=False)
+    day_number = Column(Integer, nullable=False)
+    total_time_minutes = Column(Float, nullable=False)
+    
+    # Relationships
+    schedule = relationship("Schedule", back_populates="daily_schedules")
+    tasks = relationship("ScheduleTask", back_populates="daily_schedule", cascade="all, delete-orphan")
+
+
+class ScheduleTask(Base):
+    __tablename__ = 'schedule_tasks'
+
+    id = Column(Integer, primary_key=True)
+    daily_schedule_id = Column(Integer, ForeignKey('daily_schedules.id'), nullable=False)
+    video_id = Column(Integer, ForeignKey('videos.id'), nullable=False)
+    chapter_name = Column(String, nullable=False)
+    video_name = Column(String, nullable=False)
+    start_time_seconds = Column(Float, nullable=False)
+    end_time_seconds = Column(Float, nullable=False)
+    duration_seconds = Column(Float, nullable=False)
+    
+    # Relationships
+    daily_schedule = relationship("DailySchedule", back_populates="tasks")
+    video = relationship("Video", back_populates="schedule_tasks")
 
 
 # --- Database Setup ---

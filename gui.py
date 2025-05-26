@@ -109,71 +109,12 @@ class VideoSchedulerGUI(ctk.CTk):
         # --- Tab 1: Course Details ---
         course_details_tab_content = self.tab_view.tab("Course Details")
 
-        self.lbl_course_title = ctk.CTkLabel(course_details_tab_content, text="No course selected",
-                                             font=ctk.CTkFont(size=18, weight="bold"), anchor="w")
-        self.lbl_course_title.pack(pady=10, fill=ctk.X, padx=10)
-
-        self.lbl_course_duration = ctk.CTkLabel(course_details_tab_content, text="", anchor="w")
-        self.lbl_course_duration.pack(pady=5, fill=ctk.X, padx=10)
-
-        # Add buttons frame for collapse/expand
-        tree_buttons_frame = ctk.CTkFrame(course_details_tab_content)
-        tree_buttons_frame.pack(fill=ctk.X, padx=10, pady=(0, 5))
-        
-        btn_collapse_all = ctk.CTkButton(
-            tree_buttons_frame,
-            text="Collapse All",
-            width=100,
-            command=self.collapse_all_tree_items
-        )
-        btn_collapse_all.pack(side=ctk.LEFT, padx=(0, 5))
-        
-        btn_expand_all = ctk.CTkButton(
-            tree_buttons_frame,
-            text="Expand All",
-            width=100,
-            command=self.expand_all_tree_items
-        )
-        btn_expand_all.pack(side=ctk.LEFT)
-
-        # Treeview for chapters and videos
-        style = ttk.Style()
-        style.theme_use("default")
-        style.configure("Treeview", rowheight=25, font=('Segoe UI', 10))  # Using a common Windows font
-        style.configure("Treeview.Heading", font=('Segoe UI', 11, 'bold'))
-
-        self.tree = ttk.Treeview(course_details_tab_content, columns=("duration", "status"), selectmode="browse")
-        self.tree.heading("#0", text="Item Name (Chapter/Video)", anchor="w")  # LTR anchor
-        self.tree.heading("duration", text="Duration", anchor="w")
-        self.tree.heading("status", text="Status", anchor="w")
-
-        self.tree.column("#0", width=400, stretch=ctk.YES, anchor="w")  # LTR anchor
-        self.tree.column("duration", width=120, anchor="center")  # Center duration
-        self.tree.column("status", width=180, anchor="w")  # LTR anchor
-        self.tree.pack(fill=ctk.BOTH, expand=True, padx=5, pady=5)
-        self.tree.bind("<Double-1>", self.on_treeview_double_click_show_dialog)  # For changing status
+        self._create_course_details_tab(course_details_tab_content)
 
         # --- Tab 2: Viewing Schedule ---
         schedule_tab_content = self.tab_view.tab("Viewing Schedule")
 
-        schedule_input_controls_frame = ctk.CTkFrame(schedule_tab_content)
-        schedule_input_controls_frame.pack(fill=ctk.X, padx=5, pady=5)
-
-        ctk.CTkLabel(schedule_input_controls_frame, text="Days to complete:").pack(side=ctk.LEFT, padx=(0, 5))
-        self.entry_num_days = ctk.CTkEntry(schedule_input_controls_frame, width=50, justify=ctk.LEFT)
-        self.entry_num_days.pack(side=ctk.LEFT, padx=(0, 10))
-        self.entry_num_days.insert(0, "30")
-
-        ctk.CTkLabel(schedule_input_controls_frame, text="Max daily hours:").pack(side=ctk.LEFT, padx=(0, 5))
-        self.entry_max_daily_hours = ctk.CTkEntry(schedule_input_controls_frame, width=50, justify=ctk.LEFT)
-        self.entry_max_daily_hours.pack(side=ctk.LEFT, padx=(0, 10))
-        self.entry_max_daily_hours.insert(0, "1.0")  # Allow float input
-
-        btn_generate_schedule = ctk.CTkButton(schedule_input_controls_frame, text="Generate Schedule", command=self.generate_and_display_schedule)
-        btn_generate_schedule.pack(side=ctk.LEFT, padx=10)
-
-        self.schedule_display_textbox = ctk.CTkTextbox(schedule_tab_content, wrap=ctk.WORD, state=ctk.DISABLED, font=('Segoe UI', 10))
-        self.schedule_display_textbox.pack(fill=ctk.BOTH, expand=True, padx=5, pady=5)
+        self._create_schedule_tab(schedule_tab_content)
 
         # --- Status Bar ---
         self.status_bar = ctk.CTkLabel(self, text="Ready", anchor=ctk.W, font=ctk.CTkFont(size=10))
@@ -236,56 +177,85 @@ class VideoSchedulerGUI(ctk.CTk):
                                parent=self):  # `parent=self` makes dialog modal to this window
             self.app_logic.delete_course(course_id)
 
-    def display_course_info_in_treeview(self, course_data_object):
-        """Displays course, chapter, and video information in the Treeview."""
-        # Clear previous Treeview content
+    def _create_course_details_tab(self, parent):
+        """Creates the course details tab."""
+        details_frame = ctk.CTkFrame(parent)
+        details_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # دکمه‌های Expand/Collapse در یک فریم جداگانه بالای Treeview
+        tree_buttons_frame = ctk.CTkFrame(details_frame)
+        tree_buttons_frame.pack(fill="x", padx=10, pady=(0, 5))
+        
+        btn_collapse_all = ctk.CTkButton(
+            tree_buttons_frame,
+            text="Collapse All",
+            width=100,
+            command=self.collapse_all_tree_items
+        )
+        btn_collapse_all.pack(side=ctk.LEFT, padx=(0, 5))
+        
+        btn_expand_all = ctk.CTkButton(
+            tree_buttons_frame,
+            text="Expand All",
+            width=100,
+            command=self.expand_all_tree_items
+        )
+        btn_expand_all.pack(side=ctk.LEFT)
+
+        # فریم برای Treeview و اسکرول‌بار
+        treeview_frame = ctk.CTkFrame(details_frame)
+        treeview_frame.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # Treeview برای نمایش ساختار درختی
+        style = ttk.Style()
+        style.theme_use("default")
+        style.configure("Treeview", rowheight=25, font=('Segoe UI', 10))
+        style.configure("Treeview.Heading", font=('Segoe UI', 11, 'bold'))
+
+        self.tree = ttk.Treeview(treeview_frame, columns=("duration", "status"), selectmode="browse")
+        self.tree.heading("#0", text="Item Name (Chapter/Video)", anchor="w")
+        self.tree.heading("duration", text="Duration", anchor="w")
+        self.tree.heading("status", text="Status", anchor="w")
+        self.tree.column("#0", width=400, stretch=ctk.YES, anchor="w")
+        self.tree.column("duration", width=120, anchor="center")
+        self.tree.column("status", width=180, anchor="w")
+        self.tree.pack(side="left", fill="both", expand=True, padx=5, pady=5)
+        self.tree.bind("<Double-1>", self.on_treeview_double_click_show_dialog)
+
+        # اسکرول‌بار عمودی
+        tree_scrollbar = ttk.Scrollbar(treeview_frame, orient="vertical", command=self.tree.yview)
+        tree_scrollbar.pack(side="right", fill="y")
+        self.tree.configure(yscrollcommand=tree_scrollbar.set)
+
+    def display_course_info_in_treeview(self, course):
+        """Displays course information in the Treeview."""
+        # Clear previous content
         for item in self.tree.get_children():
             self.tree.delete(item)
 
-        if not course_data_object:
-            self.lbl_course_title.configure(text="No course selected")
-            self.lbl_course_duration.configure(text="")
+        if course is None:
+            self.tree.insert("", "end", text="No course selected", values=("", ""))
             return
 
-        self.lbl_course_title.configure(text=f"Course: {course_data_object.name}")
-        total_hours = course_data_object.total_duration_seconds / 3600
-        total_minutes = (course_data_object.total_duration_seconds % 3600) / 60
-        self.lbl_course_duration.configure(text=f"Total Course Duration: {total_hours:.0f}h {total_minutes:.0f}m")
+        # Course title and duration
+        self.tree.insert("", "end", iid="course_title", text=f"Course: {course.name}", values=("", ""))
+        total_duration = sum(ch.total_duration_seconds for ch in course.chapters)
+        self.tree.insert("", "end", iid="course_duration", text=f"Total Duration: {self._format_time(total_duration)}", values=("", ""))
 
-        course_node_id = f"course_{course_data_object.id}"
-        self.tree.insert("", "end", iid=course_node_id,
-                         text=f"{course_data_object.name} (Full Course)",
-                         values=(f"{total_hours:.0f}h {total_minutes:.0f}m", ""), open=True)
+        # Sort chapters by order
+        sorted_chapters = sorted(course.chapters, key=lambda x: x.order_in_course)
 
-        # Get all chapters and sort them by order_in_course
-        chapters = sorted(course_data_object.chapters, key=lambda x: x.order_in_course)
-        
-        for chapter in chapters:  # Now using sorted chapters
-            chap_minutes_total = chapter.total_duration_seconds / 60
-            chap_seconds_rem = chapter.total_duration_seconds % 60
-
-            chapter_node_id = f"chap_{chapter.id}"
-            # Format chapter number with leading zero
-            chapter_number = f"{chapter.order_in_course:02d}"
-            self.tree.insert(course_node_id, "end", iid=chapter_node_id,
-                             text=f"Chapter {chapter_number}: {chapter.name}",
-                             values=(f"{chap_minutes_total:.0f}m {chap_seconds_rem:.0f}s", ""), open=True)
-
-            for video in chapter.videos:  # Assumes videos are ordered by relationship
-                vid_minutes_total = video.duration_seconds / 60
-                vid_seconds_rem = video.duration_seconds % 60
-                status_text_map = {  # English status texts
-                    WatchedStatusEnum.UNWATCHED: "Unwatched",
-                    WatchedStatusEnum.PARTIALLY_WATCHED: f"Partial ({video.watched_seconds / 60:.1f}m watched)",
-                    WatchedStatusEnum.WATCHED: "Watched"
-                }
-                status_display_text = status_text_map.get(video.watched_status, "Unknown")
-                video_node_id = f"vid_{video.id}"  # Used as iid for treeview item
-                self.tree.insert(chapter_node_id, "end", iid=video_node_id,
-                                 text=f"  {video.order_in_chapter}. {video.name}",  # Indent video names
-                                 values=(f"{vid_minutes_total:.0f}m {vid_seconds_rem:.0f}s", status_display_text))
-
-        self.update_course_list_display()  # To update "(Current)" course indicator
+        for chapter in sorted_chapters:
+            chapter_id = f"chapter_{chapter.id}"
+            chapter_text = f"Chapter {chapter.order_in_course:02d}: {chapter.name}"
+            chapter_node = self.tree.insert("", "end", iid=chapter_id, text=chapter_text, values=(self._format_time(chapter.total_duration_seconds), ""))
+            for video in chapter.videos:
+                video_id = f"vid_{video.id}"
+                status = video.watched_status.value
+                if video.watched_status != WatchedStatusEnum.WATCHED:
+                    progress = (video.watched_seconds / video.duration_seconds) * 100 if video.duration_seconds else 0
+                    status += f" ({progress:.1f}%)"
+                self.tree.insert(chapter_id, "end", iid=video_id, text=video.name, values=(self._format_time(video.duration_seconds), status))
 
     @staticmethod
     def _toggle_partial_entry_callback(status_variable, label_widget, entry_widget):
@@ -384,31 +354,160 @@ class VideoSchedulerGUI(ctk.CTk):
         apply_button = ctk.CTkButton(dialog_content_frame, text="Apply Status", command=handle_apply_status_change)
         apply_button.pack(pady=(15, 5))
 
+    def _create_schedule_tab(self, parent):
+        """Creates the Viewing Schedule tab."""
+        schedule_frame = ctk.CTkFrame(parent)
+        schedule_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        schedule_frame.grid_propagate(False)
+        schedule_frame.pack_propagate(False)
+        schedule_frame.configure(width=900, height=600)
+        schedule_frame.grid_rowconfigure(1, weight=1)
+        schedule_frame.grid_columnconfigure(0, weight=1)
+
+        # Controls frame with grid layout (no extra columns)
+        controls_frame = ctk.CTkFrame(schedule_frame)
+        controls_frame.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 5))
+        for i in range(6):
+            controls_frame.grid_columnconfigure(i, weight=0)
+        controls_frame.grid_columnconfigure(5, weight=1)
+
+        # Days input
+        days_label = ctk.CTkLabel(controls_frame, text="Days to complete:")
+        days_label.grid(row=0, column=0, sticky="w", padx=(5, 2), pady=5)
+        self.days_entry = ctk.CTkEntry(controls_frame, width=80)
+        self.days_entry.grid(row=0, column=1, sticky="w", padx=(0, 10), pady=5)
+        self.days_entry.insert(0, "30")
+        self.days_entry.configure(font=ctk.CTkFont(size=13))
+
+        # Max daily minutes input
+        minutes_label = ctk.CTkLabel(controls_frame, text="Max daily minutes:")
+        minutes_label.grid(row=0, column=2, sticky="w", padx=(5, 2), pady=5)
+        self.minutes_entry = ctk.CTkEntry(controls_frame, width=80)
+        self.minutes_entry.grid(row=0, column=3, sticky="w", padx=(0, 10), pady=5)
+        self.minutes_entry.insert(0, "60")
+        self.minutes_entry.configure(font=ctk.CTkFont(size=13))
+
+        # Generate button
+        generate_button = ctk.CTkButton(
+            controls_frame,
+            text="Generate Schedule",
+            width=140,
+            height=36,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self.generate_and_display_schedule
+        )
+        generate_button.grid(row=0, column=4, sticky="w", padx=(0, 5), pady=5)
+
+        # Save button
+        save_button = ctk.CTkButton(
+            controls_frame,
+            text="Save Schedule",
+            width=140,
+            height=36,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self.save_schedule_to_db
+        )
+        save_button.grid(row=0, column=5, sticky="w", padx=(0, 5), pady=5)
+
+        # Schedule display directly in the main frame (no extra box)
+        schedule_display_container = ctk.CTkFrame(schedule_frame)
+        schedule_display_container.grid(row=1, column=0, sticky="nsew", padx=0, pady=0)
+        schedule_display_container.grid_rowconfigure(0, weight=1)
+        schedule_display_container.grid_columnconfigure(0, weight=1)
+
+        self.schedule_canvas = ctk.CTkCanvas(schedule_display_container)
+        self.schedule_scrollbar = ctk.CTkScrollbar(schedule_display_container, orientation="vertical",
+                                                 command=self.schedule_canvas.yview)
+        self.schedule_scrollable_frame = ctk.CTkFrame(self.schedule_canvas)
+
+        self.schedule_scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.schedule_canvas.configure(
+                scrollregion=self.schedule_canvas.bbox("all")
+            )
+        )
+        self.schedule_canvas.create_window((0, 0), window=self.schedule_scrollable_frame, anchor="nw")
+        self.schedule_canvas.configure(yscrollcommand=self.schedule_scrollbar.set)
+
+        self.schedule_canvas.grid(row=0, column=0, sticky="nsew")
+        self.schedule_scrollbar.grid(row=0, column=1, sticky="ns")
+
+        self.schedule_canvas.bind_all("<MouseWheel>", self._on_schedule_mousewheel)
+        self.schedule_canvas.bind_all("<Shift-MouseWheel>", self._on_schedule_shift_mousewheel)
+
+        # Variable to hold the generated schedule
+        self.generated_schedule = None
+
     def generate_and_display_schedule(self):
-        """Gets input, generates schedule via app_logic, and displays it."""
-        num_days_input = self.entry_num_days.get()
-        max_hours_input = self.entry_max_daily_hours.get()
+        """Generate and display the schedule (without saving)."""
+        # Clear previous schedule
+        for widget in self.schedule_scrollable_frame.winfo_children():
+            widget.destroy()
 
-        schedule_data_list = self.app_logic.generate_schedule(num_days_input, max_hours_input)
+        num_days = self.days_entry.get()
+        max_daily_minutes = self.minutes_entry.get()
 
-        self.schedule_display_textbox.configure(state=ctk.NORMAL)  # Enable editing
-        self.schedule_display_textbox.delete("1.0", ctk.END)  # Clear previous content
+        # Only generate schedule (do not save)
+        schedule = self.app_logic.generate_schedule(num_days, max_daily_minutes)
+        self.generated_schedule = schedule
 
-        if not schedule_data_list:
-            self.schedule_display_textbox.insert(ctk.END, "No schedule to display or an error occurred.")
+        if not schedule:
+            return
+
+        for day_plan in schedule:
+            day_frame = ctk.CTkFrame(self.schedule_scrollable_frame)
+            day_frame.pack(fill="x", padx=5, pady=5)
+
+            day_label = ctk.CTkLabel(
+                day_frame,
+                text=f"Day {day_plan['day']} - Total Time: {day_plan['total_time_minutes']:.1f} minutes",
+                font=("Arial", 14, "bold")
+            )
+            day_label.pack(fill="x", padx=5, pady=5)
+
+            for task in day_plan['tasks']:
+                task_frame = ctk.CTkFrame(day_frame)
+                task_frame.pack(fill="x", padx=10, pady=2)
+
+                start_time = self._format_time(task['start_time'])
+                end_time = self._format_time(task['end_time'])
+                duration = self._format_time(task['duration'])
+
+                task_text = f"{task['chapter_name']} - {task['video_name']}\n"
+                task_text += f"Time: {start_time} to {end_time} (Duration: {duration})"
+
+                task_label = ctk.CTkLabel(task_frame, text=task_text, justify="left")
+                task_label.pack(fill="x", padx=5, pady=2)
+
+    def save_schedule_to_db(self):
+        """Save the generated schedule to the database."""
+        if not self.generated_schedule:
+            self.show_status_message("Please generate the schedule first.", "warning")
+            return
+        num_days = self.days_entry.get()
+        max_daily_minutes = self.minutes_entry.get()
+        result = self.app_logic.save_schedule(self.generated_schedule, num_days, max_daily_minutes)
+        if result:
+            self.show_status_message("Schedule saved successfully.", "info")
         else:
-            full_schedule_display_text = []
-            for day_plan_item in schedule_data_list:
-                day_header_text = f"\n--- Day {day_plan_item['day']} (Total time: {day_plan_item['total_time_minutes']:.2f} minutes) ---"
-                full_schedule_display_text.append(day_header_text)
-                for task_item_text in day_plan_item['tasks_text']:
-                    full_schedule_display_text.append(f"  - {task_item_text}")  # LTR: Indent with spaces
+            self.show_status_message("Error saving schedule!", "error")
 
-            final_text_to_show = "\n".join(full_schedule_display_text).strip()
-            self.schedule_display_textbox.insert(ctk.END, final_text_to_show)
+    def _on_schedule_mousewheel(self, event):
+        """Handle mouse wheel scrolling for schedule."""
+        if self.schedule_canvas.winfo_height() < self.schedule_scrollable_frame.winfo_height():
+            self.schedule_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
-        self.schedule_display_textbox.configure(state=ctk.DISABLED)  # Disable editing
-        self.tab_view.set("Viewing Schedule")  # Switch to the schedule tab
+    def _on_schedule_shift_mousewheel(self, event):
+        """Handle shift+mouse wheel scrolling for schedule."""
+        if self.schedule_canvas.winfo_width() < self.schedule_scrollable_frame.winfo_width():
+            self.schedule_canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _format_time(self, seconds):
+        """Formats time in seconds to HH:MM:SS format."""
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        seconds = int(seconds % 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
     def show_status_message(self, message_text, message_type="info"):
         """Displays a message in the status bar."""

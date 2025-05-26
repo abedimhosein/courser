@@ -10,6 +10,9 @@ from database import (
     Chapter,
     Video,
     WatchedStatusEnum,
+    Schedule,
+    DailySchedule,
+    ScheduleTask,
 )
 
 # Supported video file extensions (case-insensitive)
@@ -71,7 +74,7 @@ class VideoSchedulerAppLogic:
             return  # User cancelled
 
         # Check if this directory path is already a registered course
-        course = self.db_session.query(Course).filter(Course.base_directory_path == directory_path).first()
+        course = self.db_session.query(Course).filter(Course.path == directory_path).first()
 
         if course:
             self.current_course = course
@@ -90,7 +93,7 @@ class VideoSchedulerAppLogic:
                                         f"Please choose a different name or load the existing course by its folder.", "error")
                 return
 
-            new_course = Course(name=course_name, base_directory_path=directory_path)
+            new_course = Course(name=course_name, path=directory_path)
             self.db_session.add(new_course)
             try:
                 self.db_session.flush()  # Get new_course.id before full commit
@@ -248,13 +251,13 @@ class VideoSchedulerAppLogic:
                     if not is_new_course:
                         db_video = self.db_session.query(Video).filter_by(
                             chapter_id=db_chapter.id,
-                            file_path=video_item['path']
+                            path=video_item['path']
                         ).first()
 
                     if not db_video:
                         db_video = Video(
                             name=video_item['name'],
-                            file_path=video_item['path'],
+                            path=video_item['path'],
                             duration_seconds=video_duration,
                             order_in_chapter=video_order,
                             chapter_id=db_chapter.id,
@@ -263,7 +266,7 @@ class VideoSchedulerAppLogic:
                         self.db_session.add(db_video)
                     else:
                         db_video.name = video_item['name']
-                        db_video.file_path = video_item['path']
+                        db_video.path = video_item['path']
                         db_video.duration_seconds = video_duration
                         db_video.order_in_chapter = video_order
                         db_video.subtitle_path = subtitle_path
@@ -301,7 +304,7 @@ class VideoSchedulerAppLogic:
             # Refresh the course object from DB to get latest state before scan
             self.db_session.refresh(self.current_course)
             self._scan_and_save_course_content(self.current_course,
-                                               self.current_course.base_directory_path,
+                                               self.current_course.path,
                                                is_new_course=False)
             self.db_session.commit()  # Commit all changes from the rescan
             self._call_gui_callback("show_message", "Course rescan completed successfully.", "info")
@@ -316,35 +319,41 @@ class VideoSchedulerAppLogic:
             self.db_session.refresh(self.current_course)
         self._call_gui_callback("display_course_info", self.current_course)
 
-    def generate_schedule(self, num_days_str, max_daily_hours_str):
-        """Generates a viewing schedule for the current course."""
+    def generate_schedule(self, num_days_str, max_daily_minutes_str):
+        """Generate a schedule for the current course (does not save)."""
         if not self.current_course:
             self._call_gui_callback("show_message", "Please load a course first to generate a schedule.", "warning")
             return []
         try:
             num_days = int(num_days_str)
-            max_daily_minutes_input = int(float(max_daily_hours_str.replace(",", ".")) * 60)
+            max_daily_minutes = int(float(max_daily_minutes_str.replace(",", ".")))
         except ValueError:
             self._call_gui_callback("show_message",
-                                    "Number of days and max daily hours must be valid numbers "
-                                    "(e.g., for hours: 1 or 1.5).", "error")
+                                    "Number of days and max daily minutes must be valid numbers.", "error")
             return []
 
-        if num_days <= 0 or max_daily_minutes_input <= 0:
-            self._call_gui_callback("show_message", "Number of days and max daily hours must be positive.", "error")
+        if num_days <= 0 or max_daily_minutes <= 0:
+            self._call_gui_callback("show_message", "Number of days and max daily minutes must be positive.", "error")
             return []
 
+        # Only generate new schedule (do not save)
+        schedule_output_for_gui = self._generate_new_schedule(num_days, max_daily_minutes)
+        return schedule_output_for_gui
+
+    def _generate_new_schedule(self, num_days, max_daily_minutes):
+        """Generates a new schedule for the current course."""
         # Expire all data in session to ensure fresh data from DB for schedule generation
         self.db_session.expire_all()
         refreshed_course = self.db_session.query(Course).filter_by(id=self.current_course.id).first()
         if not refreshed_course:
             self._call_gui_callback("show_message", "Error: Current course not found in database for scheduling.", "error")
             return []
-        self.current_course = refreshed_course  # Use the refreshed object
+        self.current_course = refreshed_course
 
+        # Get all unwatched videos
         all_videos_flat = []
-        for chapter in self.current_course.chapters:  # Assumes chapters are ordered by relationship
-            for video in chapter.videos:  # Assumes videos are ordered by relationship
+        for chapter in self.current_course.chapters:
+            for video in chapter.videos:
                 if video.watched_status != WatchedStatusEnum.WATCHED:
                     all_videos_flat.append({
                         "id": video.id,
@@ -352,7 +361,7 @@ class VideoSchedulerAppLogic:
                         "total_duration_seconds": video.duration_seconds,
                         "remaining_seconds": video.duration_seconds - video.watched_seconds,
                         "chapter_name": chapter.name,
-                        "current_offset_seconds": video.watched_seconds  # Where to start watching from
+                        "current_offset_seconds": video.watched_seconds
                     })
 
         if not all_videos_flat:
@@ -360,65 +369,67 @@ class VideoSchedulerAppLogic:
             return []
 
         total_remaining_course_duration_seconds = sum(v["remaining_seconds"] for v in all_videos_flat)
+        total_remaining_minutes = total_remaining_course_duration_seconds / 60
 
         # Check if completion is possible with given constraints
-        if (total_remaining_course_duration_seconds / 60) > (num_days * max_daily_minutes_input) and total_remaining_course_duration_seconds > 0.1:
-            min_daily_needed = (total_remaining_course_duration_seconds / 60) / num_days if num_days > 0 else float('inf')
-            message = (f"Warning: Completing the course in {num_days} days with {max_daily_minutes_input} minutes/day is not possible.\n"
+        if total_remaining_minutes > (num_days * max_daily_minutes) and total_remaining_minutes > 0.1:
+            min_daily_needed = total_remaining_minutes / num_days if num_days > 0 else float('inf')
+            message = (f"Warning: Completing the course in {num_days} days with {max_daily_minutes} minutes/day is not possible.\n"
                        f"You need at least {min_daily_needed:.2f} minutes/day.")
             self._call_gui_callback("show_message", message, "warning")
-            # Continue to generate schedule anyway, it will show what's possible
 
         schedule_output_for_gui = []
         current_video_idx = 0
 
         for day_num in range(1, num_days + 1):
-            daily_tasks_text = []
+            daily_tasks = []
             time_allocated_for_day_seconds = 0.0
+            max_daily_seconds = max_daily_minutes * 60
 
-            while time_allocated_for_day_seconds < max_daily_minutes_input and current_video_idx < len(all_videos_flat):
+            while time_allocated_for_day_seconds < max_daily_seconds and current_video_idx < len(all_videos_flat):
                 video_to_watch = all_videos_flat[current_video_idx]
 
-                if video_to_watch["remaining_seconds"] < 0.1:  # Already watched or negligible remaining
+                if video_to_watch["remaining_seconds"] < 0.1:
                     current_video_idx += 1
                     continue
 
-                time_can_spend_on_this_video_today = float(max_daily_minutes_input) - time_allocated_for_day_seconds
+                time_can_spend_on_this_video_today = max_daily_seconds - time_allocated_for_day_seconds
                 watch_duration_this_session = min(video_to_watch["remaining_seconds"], time_can_spend_on_this_video_today)
 
-                if watch_duration_this_session < 0.1:  # Not enough time left today for a meaningful chunk
+                if watch_duration_this_session < 0.1:
                     break
 
                 start_offset_s = video_to_watch["current_offset_seconds"]
                 end_offset_s = video_to_watch["current_offset_seconds"] + watch_duration_this_session
 
-                task_description = (
-                    f"Chapter: {video_to_watch['chapter_name']}, Video: {video_to_watch['name']}\n"
-                    f"  Watch from {start_offset_s // 60:.0f}m{start_offset_s % 60:02.0f}s "
-                    f"to {end_offset_s // 60:.0f}m{end_offset_s % 60:02.0f}s "
-                    f"(Duration this session: {watch_duration_this_session // 60:.0f}m{watch_duration_this_session % 60:02.0f}s)"
-                )
-                daily_tasks_text.append(task_description)
+                task = {
+                    "chapter_name": video_to_watch['chapter_name'],
+                    "video_name": video_to_watch['name'],
+                    "start_time": start_offset_s,
+                    "end_time": end_offset_s,
+                    "duration": watch_duration_this_session,
+                    "video_id": video_to_watch['id']
+                }
+                daily_tasks.append(task)
 
                 time_allocated_for_day_seconds += watch_duration_this_session
                 video_to_watch["remaining_seconds"] -= watch_duration_this_session
-                video_to_watch["current_offset_seconds"] += watch_duration_this_session  # Update for next potential session
+                video_to_watch["current_offset_seconds"] += watch_duration_this_session
 
-                if video_to_watch["remaining_seconds"] < 0.1:  # Video finished in this session
+                if video_to_watch["remaining_seconds"] < 0.1:
                     current_video_idx += 1
 
-            if daily_tasks_text:
+            if daily_tasks:
                 schedule_output_for_gui.append({
                     "day": day_num,
-                    "tasks_text": daily_tasks_text,
+                    "tasks": daily_tasks,
                     "total_time_minutes": time_allocated_for_day_seconds / 60
                 })
 
-            if current_video_idx >= len(all_videos_flat):  # All videos scheduled
+            if current_video_idx >= len(all_videos_flat):
                 break
 
         if current_video_idx < len(all_videos_flat) and schedule_output_for_gui:
-            # Count videos that still have significant time remaining
             remaining_videos_with_time = sum(1 for i in range(current_video_idx, len(all_videos_flat))
                                              if all_videos_flat[i]["remaining_seconds"] > 0.1)
             if remaining_videos_with_time > 0:
@@ -429,6 +440,53 @@ class VideoSchedulerAppLogic:
             self._call_gui_callback("show_message", "Viewing schedule generated successfully.", "info")
 
         return schedule_output_for_gui
+
+    def save_schedule(self, schedule_output, num_days, max_daily_minutes):
+        """Save the generated schedule to the database."""
+        try:
+            # Delete previous schedules with the same parameters for this course
+            self.db_session.query(Schedule).filter_by(
+                course_id=self.current_course.id,
+                num_days=num_days,
+                max_daily_minutes=max_daily_minutes
+            ).delete()
+            self.db_session.commit()
+            # Save new schedule
+            new_schedule = Schedule(
+                course_id=self.current_course.id,
+                num_days=num_days,
+                max_daily_minutes=max_daily_minutes
+            )
+            self.db_session.add(new_schedule)
+            self.db_session.flush()
+
+            for day_plan in schedule_output:
+                daily_schedule = DailySchedule(
+                    schedule_id=new_schedule.id,
+                    day_number=day_plan['day'],
+                    total_time_minutes=day_plan['total_time_minutes']
+                )
+                self.db_session.add(daily_schedule)
+                self.db_session.flush()
+
+                for task in day_plan['tasks']:
+                    schedule_task = ScheduleTask(
+                        daily_schedule_id=daily_schedule.id,
+                        video_id=task['video_id'],
+                        chapter_name=task['chapter_name'],
+                        video_name=task['video_name'],
+                        start_time_seconds=task['start_time'],
+                        end_time_seconds=task['end_time'],
+                        duration_seconds=task['duration']
+                    )
+                    self.db_session.add(schedule_task)
+            self.db_session.commit()
+            return True
+        except Exception as e:
+            self.db_session.rollback()
+            print(f"Error saving schedule to database: {e}")
+            traceback.print_exc()
+            return False
 
     def update_video_progress(self, video_id_str, new_watched_status_str, watched_seconds_str="0"):
         """Updates the watched status and progress of a video."""
