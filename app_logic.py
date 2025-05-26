@@ -118,24 +118,30 @@ class VideoSchedulerAppLogic:
         print(f"Scanning content for course '{course_obj.name}' at path: {directory_path}")
         overall_course_duration = 0.0
 
+        # Show progress dialog
+        self._call_gui_callback("show_progress_dialog", "Scanning course...")
+        self._call_gui_callback("update_progress", 0, "Initializing scan...")
+
         # Sets to keep track of items found on disk during this scan
         current_disk_chapter_paths = set()
-        # current_disk_video_paths_for_course = set() # If needed for global video deletion logic later
 
         # 1. Determine potential chapters (subdirectories or the root itself)
         potential_chapters_info = []
 
         if not os.path.isdir(directory_path):
+            self._call_gui_callback("hide_progress_dialog")
             raise FileNotFoundError(f"Course base path '{directory_path}' not found or is not a directory.")
 
         # Find actual subdirectories to be treated as chapters
         actual_subdirectories = []
         try:
+            self._call_gui_callback("update_progress", 0.05, "Scanning directories...")
             for item_name in os.listdir(directory_path):
                 item_full_path = os.path.join(directory_path, item_name)
                 if os.path.isdir(item_full_path):
                     actual_subdirectories.append(item_name)
         except PermissionError:
+            self._call_gui_callback("hide_progress_dialog")
             print(f"Permission denied to read directory: {directory_path}")
             raise  # Re-raise to be caught by the caller
 
@@ -157,16 +163,17 @@ class VideoSchedulerAppLogic:
         if not potential_chapters_info:
             print(f"Warning: No chapters found to process in '{directory_path}'.")
             course_obj.total_duration_seconds = 0.0
-            # If it's not a new course, we might need to delete existing chapters if they are now all gone.
-            # This is handled later by comparing current_disk_chapter_paths with DB.
-            # For now, just return if nothing to process.
-            # However, we should proceed to the deletion logic if it's a rescan.
+            self._call_gui_callback("hide_progress_dialog")
+            return
 
         # 2. Process each identified chapter
-        disk_chapter_order = 0
-        for chap_info in potential_chapters_info:
-            disk_chapter_order += 1
+        total_chapters = len(potential_chapters_info)
+        for chapter_index, chap_info in enumerate(potential_chapters_info, 1):
+            # Update progress
+            progress = (chapter_index - 1) / total_chapters
+            self._call_gui_callback("update_progress", progress, f"Processing chapter {chapter_index} of {total_chapters}...")
 
+            disk_chapter_order = chapter_index
             chapter_path_on_disk = chap_info['path']
             chapter_name_on_disk = chap_info['name']
             current_disk_chapter_paths.add(chapter_path_on_disk)
@@ -184,131 +191,90 @@ class VideoSchedulerAppLogic:
                     name=chapter_name_on_disk,
                     path=chapter_path_on_disk,
                     order_in_course=disk_chapter_order,
-                    course_id=course_obj.id  # Associate with the current course object
+                    course_id=course_obj.id
                 )
                 self.db_session.add(db_chapter)
-                self.db_session.flush()  # Necessary to get db_chapter.id for new videos
+                self.db_session.flush()
             else:  # Chapter already exists, update its info
                 print(f"  Updating existing chapter: '{chapter_name_on_disk}' (New Order: {disk_chapter_order})")
-                db_chapter.name = chapter_name_on_disk  # Update name in case folder was renamed
-                db_chapter.order_in_course = disk_chapter_order  # Update order
+                db_chapter.name = chapter_name_on_disk
+                db_chapter.order_in_course = disk_chapter_order
 
             # 3. Scan for videos within the current chapter path
             chapter_total_duration = 0.0
             disk_video_order = 0
             current_disk_video_paths_in_chapter = set()
 
+            # Get all files in the chapter directory
             try:
-                print(f"    Scanning videos in chapter '{chapter_name_on_disk}' at path: {chapter_path_on_disk}")
-                items_in_chapter_dir = sorted(os.listdir(chapter_path_on_disk))  # Sort for consistent video order
-            except FileNotFoundError:
-                print(f"    Error: Chapter path '{chapter_path_on_disk}' not found during video scan. Skipping.")
-                # If chapter was in DB, it might be removed later if not in current_disk_chapter_paths
-                continue
+                chapter_files = os.listdir(chapter_path_on_disk)
             except PermissionError:
-                print(f"    Error: Permission denied to read chapter path '{chapter_path_on_disk}'. Skipping.")
+                print(f"Permission denied to read chapter directory: {chapter_path_on_disk}")
                 continue
 
-            for file_name in items_in_chapter_dir:
-                video_file_path_on_disk = os.path.join(chapter_path_on_disk, file_name)
+            # Filter for video files
+            video_files = [f for f in chapter_files if os.path.splitext(f)[1].lower() in VIDEO_EXTENSIONS]
+            total_videos = len(video_files)
 
-                # Check if it's a file and has a supported video extension
-                if not (os.path.isfile(video_file_path_on_disk) and file_name.lower().endswith(VIDEO_EXTENSIONS)):
-                    continue  # Skip if not a video file
+            for video_index, video_filename in enumerate(sorted(video_files), 1):
+                # Update progress for videos
+                video_progress = (chapter_index - 1 + video_index / total_videos) / total_chapters
+                self._call_gui_callback("update_progress", video_progress, 
+                    f"Processing chapter {chapter_index} of {total_chapters} - video {video_index} of {total_videos}...")
 
-                print(f"      Found potential video: {file_name}")
-                current_disk_video_paths_in_chapter.add(video_file_path_on_disk)
                 disk_video_order += 1
+                video_path = os.path.join(chapter_path_on_disk, video_filename)
+                current_disk_video_paths_in_chapter.add(video_path)
 
+                # Get video duration
+                video_duration = self.get_video_duration(video_path)
+                if video_duration is None:
+                    print(f"Warning: Could not get duration for video: {video_path}")
+                    video_duration = 0.0
+
+                # Find subtitle if exists
+                subtitle_path = self.find_subtitle(video_path)
+
+                # Check if video already exists in database
                 db_video = None
                 if not is_new_course:
-                    # A video is uniquely identified by its full file path.
-                    # If a video file moved chapters, its old DB entry should be deleted,
-                    # and a new one created for the new chapter.
                     db_video = self.db_session.query(Video).filter_by(
-                        file_path=video_file_path_on_disk
+                        chapter_id=db_chapter.id,
+                        file_path=video_path
                     ).first()
 
-                    # If video found but belongs to a different chapter in DB, treat as new for this chapter
-                    if db_video and db_video.chapter_id != db_chapter.id:
-                        print(f"      Warning: Video '{file_name}' with path '{video_file_path_on_disk}' "
-                              f"found in DB under a different chapter (ID: {db_video.chapter_id}). "
-                              f"It will be associated with current chapter '{db_chapter.name}' (ID: {db_chapter.id}).")
-                        # We might want to delete the old association or handle it.
-                        # For now, if it's in a different chapter in DB, it will be updated to this chapter.
-                        # If unique constraint on file_path is per DB, this is fine.
-                        # If file_path is unique AND chapter_id is part of key, then new one is made.
-                        # Current model has file_path as unique, so it will be updated.
-                        pass
-
-                video_duration = self.get_video_duration(video_file_path_on_disk)
-
-                if video_duration is None or video_duration <= 0:
-                    print(f"      Warning: Could not get valid duration for '{file_name}'. Skipping this video.")
-                    # If this video was in DB, it should be removed as its file is now problematic
-                    if db_video:
-                        print(f"        Video '{db_video.name}' (problematic file) will be removed from database.")
-                        self.db_session.delete(db_video)  # Delete problematic existing video
-                    disk_video_order -= 1  # Adjust order as this video is skipped
-                    current_disk_video_paths_in_chapter.remove(video_file_path_on_disk)  # Don't count it as "found on disk"
-                    continue
-
-                if not db_video:  # Video is new to the database or being re-associated
-                    print(f"      Adding new video entry: '{file_name}' to chapter '{db_chapter.name}'")
+                if not db_video:  # New video
+                    print(f"    Adding new video: '{video_filename}' (Order: {disk_video_order})")
                     db_video = Video(
-                        name=file_name,
-                        file_path=video_file_path_on_disk,
+                        name=video_filename,
+                        file_path=video_path,
                         duration_seconds=video_duration,
-                        chapter_id=db_chapter.id  # Associate with the current chapter
-                        # order_in_chapter will be set below
+                        order_in_chapter=disk_video_order,
+                        chapter_id=db_chapter.id,
+                        subtitle_path=subtitle_path
                     )
                     self.db_session.add(db_video)
-                else:  # Video already exists, update its info
-                    print(f"      Updating existing video: '{file_name}'")
-                    db_video.name = file_name  # Update name in case of case change or rename
-                    db_video.duration_seconds = video_duration  # Update duration
-                    if db_video.chapter_id != db_chapter.id:  # If it was found by path but belonged to another chapter
-                        db_video.chapter_id = db_chapter.id  # Re-associate with this chapter
+                else:  # Update existing video
+                    print(f"    Updating existing video: '{video_filename}' (New Order: {disk_video_order})")
+                    db_video.name = video_filename
+                    db_video.file_path = video_path
+                    db_video.duration_seconds = video_duration
+                    db_video.order_in_chapter = disk_video_order
+                    db_video.subtitle_path = subtitle_path
 
-                db_video.order_in_chapter = disk_video_order
-                db_video.subtitle_path = self.find_subtitle(video_file_path_on_disk)
                 chapter_total_duration += video_duration
 
-            # After processing all files in the chapter directory on disk,
-            # remove videos from DB that are in this chapter but no longer on disk.
-            if not is_new_course and db_chapter.id is not None:  # db_chapter.id might be None if flush failed
-                db_video_paths_for_this_chapter_in_db = {
-                    # Querying for a tuple (vfp[0]) as Video.file_path is a single column
-                    vfp[0] for vfp in self.db_session.query(Video.file_path).filter_by(chapter_id=db_chapter.id).all()
-                }
-                videos_to_delete_paths = db_video_paths_for_this_chapter_in_db - current_disk_video_paths_in_chapter
-                if videos_to_delete_paths:
-                    print(f"    Deleting {len(videos_to_delete_paths)} missing videos from chapter '{db_chapter.name}'...")
-                    for path_to_del in videos_to_delete_paths:
-                        video_to_del_obj = self.db_session.query(Video).filter_by(chapter_id=db_chapter.id, file_path=path_to_del).first()
-                        if video_to_del_obj:
-                            self.db_session.delete(video_to_del_obj)
-
+            # Update chapter duration
             db_chapter.total_duration_seconds = chapter_total_duration
             overall_course_duration += chapter_total_duration
 
-        # 4. After processing all chapters found on disk,
-        # remove chapters from DB that belong to this course but are no longer on disk.
-        if not is_new_course:
-            db_chapter_paths_for_this_course_in_db = {
-                # Querying for a tuple (cp[0])
-                cp[0] for cp in self.db_session.query(Chapter.path).filter_by(course_id=course_obj.id).all()
-            }
-            chapters_to_delete_paths = db_chapter_paths_for_this_course_in_db - current_disk_chapter_paths
-            if chapters_to_delete_paths:
-                print(f"  Deleting {len(chapters_to_delete_paths)} missing chapters from course '{course_obj.name}'...")
-                for path_to_del in chapters_to_delete_paths:
-                    chapter_to_del_obj = self.db_session.query(Chapter).filter_by(course_id=course_obj.id, path=path_to_del).first()
-                    if chapter_to_del_obj:
-                        self.db_session.delete(chapter_to_del_obj)  # Videos within are cascade-deleted by relationship
-
+        # Update course total duration
         course_obj.total_duration_seconds = overall_course_duration
-        print(f"Finished scanning course '{course_obj.name}'. Total duration: {overall_course_duration / 3600:.2f} hours.")
+
+        # Final progress update
+        self._call_gui_callback("update_progress", 1.0, "Scan completed!")
+        # Hide progress dialog
+        self._call_gui_callback("hide_progress_dialog")
 
     def rescan_current_course(self):
         """Rescans the currently loaded course for file changes."""

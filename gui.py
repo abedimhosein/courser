@@ -18,17 +18,34 @@ class VideoSchedulerGUI(ctk.CTk):
         self.app_logic.register_gui_callbacks(
             display_course_info=self.display_course_info_in_treeview,
             show_message=self.show_status_message,
-            update_course_list_display=self.update_course_list_display
+            update_course_list_display=self.update_course_list_display,
+            update_progress=self.update_progress,
+            show_progress_dialog=self.show_progress_dialog,
+            hide_progress_dialog=self.hide_progress_dialog
         )
+
+        # --- Progress Dialog ---
+        self.progress_dialog = None
+        self.progress_bar = None
+        self.progress_label = None
 
         # --- Main container frame ---
         main_frame = ctk.CTkFrame(self)
         main_frame.pack(fill=ctk.BOTH, expand=True, padx=10, pady=10)
 
         # --- Left panel: Course Management ---
-        self.courses_management_frame = ctk.CTkFrame(main_frame, width=300)  # Fixed width for left panel
+        self.courses_management_frame = ctk.CTkFrame(main_frame)
         self.courses_management_frame.pack(side=ctk.LEFT, fill=ctk.Y, padx=(0, 5), pady=0)
-        self.courses_management_frame.pack_propagate(False)  # Prevent frame from shrinking to content
+        
+        # Add search functionality
+        search_frame = ctk.CTkFrame(self.courses_management_frame)
+        search_frame.pack(fill=ctk.X, padx=5, pady=5)
+        
+        self.search_var = tk.StringVar()
+        self.search_var.trace('w', self.filter_courses)
+        
+        search_entry = ctk.CTkEntry(search_frame, textvariable=self.search_var, placeholder_text="جستجوی دوره...")
+        search_entry.pack(fill=ctk.X, padx=5, pady=5)
 
         ctk.CTkLabel(self.courses_management_frame, text="My Courses", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=10, padx=10)
 
@@ -36,33 +53,41 @@ class VideoSchedulerGUI(ctk.CTk):
         canvas_frame = ctk.CTkFrame(self.courses_management_frame)
         canvas_frame.pack(fill=ctk.BOTH, expand=True, padx=5, pady=(0, 5))
 
-        canvas = tk.Canvas(canvas_frame, highlightthickness=0)
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # Create a frame for the canvas and scrollbars
+        canvas_container = ctk.CTkFrame(canvas_frame)
+        canvas_container.pack(fill=ctk.BOTH, expand=True)
+
+        # Create canvas with both scrollbars
+        self.canvas = tk.Canvas(canvas_container, highlightthickness=0)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         # Scrollbars
-        v_scrollbar = tk.Scrollbar(canvas_frame, orient="vertical", command=canvas.yview)
+        v_scrollbar = ttk.Scrollbar(canvas_container, orient="vertical", command=self.canvas.yview)
         v_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        h_scrollbar = tk.Scrollbar(self.courses_management_frame, orient="horizontal", command=canvas.xview)
-        h_scrollbar.pack(fill=tk.X, padx=5, pady=(0, 5))
+        h_scrollbar = ttk.Scrollbar(canvas_frame, orient="horizontal", command=self.canvas.xview)
+        h_scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
 
-        canvas.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+        self.canvas.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
 
         # Internal scrollable frame
-        self.course_listbox_frame = ctk.CTkFrame(canvas)
-        canvas_window = canvas.create_window((0, 0), window=self.course_listbox_frame, anchor="nw")
+        self.course_listbox_frame = ctk.CTkFrame(self.canvas)
+        self.canvas_window = self.canvas.create_window((0, 0), window=self.course_listbox_frame, anchor="nw")
 
-        # Update scrollregion dynamically
-        def update_scrollregion(event):
-            canvas.configure(scrollregion=canvas.bbox("all"))
+        # Bind mouse wheel events for scrolling
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        self.canvas.bind_all("<Shift-MouseWheel>", self._on_shift_mousewheel)
+        
+        # Bind resize events
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+        self.course_listbox_frame.bind("<Configure>", self._on_frame_configure)
 
-        self.course_listbox_frame.bind("<Configure>", update_scrollregion)
-
-        # Resize internal frame width to match canvas when window resizes
-        def resize_canvas(event):
-            canvas.itemconfig(canvas_window, width=event.width)
-
-        canvas.bind("<Configure>", resize_canvas)
+        # Add resize handle
+        self.resize_handle = ctk.CTkFrame(self.courses_management_frame, width=5, cursor="size_we")
+        self.resize_handle.pack(side=ctk.RIGHT, fill=ctk.Y)
+        self.resize_handle.bind("<Button-1>", self._start_resize)
+        self.resize_handle.bind("<B1-Motion>", self._on_resize)
+        self.resize_handle.bind("<ButtonRelease-1>", self._stop_resize)
 
         btn_add_course = ctk.CTkButton(self.courses_management_frame, text="Add/Load New Course", command=self.app_logic.select_and_load_course)
         btn_add_course.pack(pady=(10, 5), fill=ctk.X, padx=5)
@@ -373,3 +398,130 @@ class VideoSchedulerGUI(ctk.CTk):
         """Handles cleanup when the application window is closed."""
         self.app_logic.close_db_session()  # Important to close DB session
         self.destroy()  # Close the GUI window
+
+    def _on_mousewheel(self, event):
+        """Handle vertical scrolling with mouse wheel"""
+        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _on_shift_mousewheel(self, event):
+        """Handle horizontal scrolling with Shift + mouse wheel"""
+        self.canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _on_canvas_configure(self, event):
+        """Update the width of the internal frame when canvas is resized"""
+        self.canvas.itemconfig(self.canvas_window, width=event.width)
+
+    def _on_frame_configure(self, event):
+        """Update the scroll region when the internal frame changes size"""
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _start_resize(self, event):
+        """Start the resize operation"""
+        self.resize_start_x = event.x_root
+        self.resize_start_width = self.courses_management_frame.winfo_width()
+
+    def _on_resize(self, event):
+        """Handle the resize operation"""
+        delta = event.x_root - self.resize_start_x
+        new_width = max(200, self.resize_start_width + delta)  # Minimum width of 200
+        self.courses_management_frame.configure(width=new_width)
+
+    def _stop_resize(self, event):
+        """Stop the resize operation"""
+        pass
+
+    def filter_courses(self, *args):
+        """Filter courses based on search text"""
+        search_text = self.search_var.get().lower()
+        
+        # Clear previous course list items
+        for widget in self.course_listbox_frame.winfo_children():
+            widget.destroy()
+
+        courses = self.app_logic.get_all_courses()
+        if not courses:
+            ctk.CTkLabel(self.course_listbox_frame, text="No courses found.").pack(pady=5, padx=5)
+            return
+
+        for course in courses:
+            if search_text in course.name.lower():
+                # Frame for each course item (button + delete button)
+                course_item_frame = ctk.CTkFrame(self.course_listbox_frame)
+                course_item_frame.pack(fill=ctk.X, pady=(2, 0), padx=2)
+
+                course_button_text = f"{course.name}"
+                if self.app_logic.current_course and self.app_logic.current_course.id == course.id:
+                    course_button_text += " (Current)"
+
+                load_course_button = ctk.CTkButton(
+                    course_item_frame,
+                    text=course_button_text,
+                    anchor="w",
+                    command=lambda c_id=course.id: self.app_logic.load_course_by_id(c_id)
+                )
+                load_course_button.pack(side=ctk.LEFT, fill=ctk.X, expand=True, padx=(0, 2))
+
+                delete_course_button = ctk.CTkButton(
+                    course_item_frame,
+                    text="X",
+                    width=30,
+                    fg_color="red",
+                    hover_color="darkred",
+                    command=lambda c_id=course.id, c_name=course.name: self.confirm_and_delete_course(c_id, c_name)
+                )
+                delete_course_button.pack(side=ctk.RIGHT)
+
+    def show_progress_dialog(self, title="Processing..."):
+        """Shows the progress dialog"""
+        if self.progress_dialog is None:
+            self.progress_dialog = ctk.CTkToplevel(self)
+            self.progress_dialog.title(title)
+            self.progress_dialog.geometry("400x150")
+            self.progress_dialog.transient(self)
+            self.progress_dialog.grab_set()
+            
+            # Center window
+            self.progress_dialog.update_idletasks()
+            width = self.progress_dialog.winfo_width()
+            height = self.progress_dialog.winfo_height()
+            x = (self.progress_dialog.winfo_screenwidth() // 2) - (width // 2)
+            y = (self.progress_dialog.winfo_screenheight() // 2) - (height // 2)
+            self.progress_dialog.geometry(f'{width}x{height}+{x}+{y}')
+            
+            # Disable window buttons
+            self.progress_dialog.protocol("WM_DELETE_WINDOW", lambda: None)
+            
+            # Add progress bar
+            self.progress_label = ctk.CTkLabel(self.progress_dialog, text="Scanning files...", font=ctk.CTkFont(size=12))
+            self.progress_label.pack(pady=(20, 10))
+            
+            self.progress_bar = ctk.CTkProgressBar(self.progress_dialog, width=350)
+            self.progress_bar.pack(pady=10, padx=20)
+            self.progress_bar.set(0)
+            
+            # Disable interaction with main window
+            self.progress_dialog.focus_set()
+            self.progress_dialog.grab_set()
+            
+            # Force update
+            self.progress_dialog.update()
+
+    def hide_progress_dialog(self):
+        """Hides the progress dialog"""
+        if self.progress_dialog is not None:
+            self.progress_dialog.destroy()
+            self.progress_dialog = None
+            self.progress_bar = None
+            self.progress_label = None
+            # Force update
+            self.update()
+
+    def update_progress(self, value, text=None):
+        """Updates the progress bar value and text"""
+        if self.progress_bar is not None:
+            self.progress_bar.set(value)
+        if text and self.progress_label is not None:
+            self.progress_label.configure(text=text)
+        # Force update
+        if self.progress_dialog is not None:
+            self.progress_dialog.update()
